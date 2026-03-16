@@ -130,6 +130,9 @@ class Simulation():
     def get_demand_set(self):
         return self.__demand_set
 
+    def get_raw_nodes(self):
+        return self.__raw_material_node
+
     def _generate_random_demand(self, rand_seed):
         if rand_seed is not None:
             seed(rand_seed)

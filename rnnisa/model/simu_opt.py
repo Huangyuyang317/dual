@@ -41,55 +41,69 @@ class SimOpt():
         self.__print_grad = print_grad
 
 
-    def FISTA(self, I_S_0, selected_location=None):
+    def FISTA(self, I_Sr_0, I_Se_0, selected_location=None):
         print('FISTA:', 'step_size', format(self.__step_size, '.3e'),
               'stop_thresh', format(self.__stop_thresh, '.3e'))
-        print('Initial Point', I_S_0)
+        print('Initial Point', I_Sr_0, I_Se_0)
         r = 3
         regula_para2 = self.__regula_para
         opt_history = []
         t_s_FISTA = time()
         if selected_location is None:
-            I_S = I_S_0
+            I_Sr = I_Sr_0
+            I_Se = I_Se_0
         else:
-            I_S = np.multiply(I_S_0, selected_location)
-        I_S_former = I_S
+            I_Sr = np.multiply(I_Sr_0, selected_location)
+            I_Se = np.multiply(I_Se_0, selected_location)
+        I_Sr_former = I_Sr
+        I_Se_former = I_Se
         print('FISTA start at:', datetime.now().strftime('%Y-%m-%d %H:%M'))
-        cost_x = self.__cost_f(I_S, self.__rep_num)
-        opt_history.append((cost_x, cost_x + np.sum(np.abs(I_S)) * self.__regula_para, np.count_nonzero(I_S)))
-        _print_opt_info(cost_x, I_S, 0, self.__regula_para)
+        cost_x = self.__cost_f(I_Sr,I_Se, self.__rep_num)
+        opt_history.append((cost_x, cost_x + np.sum(np.abs(I_Sr)) * self.__regula_para , np.count_nonzero(I_Sr) + np.count_nonzero(I_Se)))
+        _print_opt_info(cost_x, I_Sr, I_Se, 0, self.__regula_para)
         former_cost = cost_x  
         k = 0
-        y = I_S
+        y_Sr = I_Sr
+        y_Se = I_Se
         while True:
             k += 1
             step_k = self.__step_size * 51 / (k ** self.__decay_mode + 50) 
-            cost_y, grad_mean = self.__grad_f(y, self.__rep_num)
+            cost_y, grad_mean_r, grad_mean_e = self.__grad_f(y_Sr, y_Se, self.__rep_num)
             if selected_location is not None:
-                grad_mean = np.multiply(grad_mean, selected_location)
+                grad_mean_r = np.multiply(grad_mean_r, selected_location)
+                grad_mean_e = np.multiply(grad_mean_e, selected_location)
             if self.__print_grad:
-                print('grad max:', format(np.max(grad_mean), '.3e'))
-                print('grad min:', format(np.min(grad_mean), '.3e'))
-            I_S = prox((y - step_k * grad_mean), step_k * regula_para2)
-            if self.__positive_flag: I_S = np.maximum(I_S, 0)
-            if self.__step_bound1 is not None: I_S = cal_step_bound(I_S_former, I_S, self.__step_bound1)
-            y = I_S + (k / (k + r)) * (I_S - I_S_former)
-            cost_x = self.__cost_f(I_S, self.__rep_num)
-            opt_history.append((cost_x, cost_x + np.sum(np.abs(I_S)) * self.__regula_para, np.count_nonzero(I_S)))
-            _print_opt_info(cost_x, I_S, k, self.__regula_para)
+                print('grad_r max:', format(np.max(grad_mean_r), '.3e'))
+                print('grad_e max:', format(np.max(grad_mean_e), '.3e'))
+                print('grad_r min:', format(np.min(grad_mean_r), '.3e'))
+                print('grad_e min:', format(np.min(grad_mean_e), '.3e'))
+            I_Sr = prox((y_Sr - step_k * grad_mean_r), step_k * regula_para2)
+            I_Se = prox((y_Se - step_k * grad_mean_e), step_k * regula_para2)
+            if self.__positive_flag: 
+                I_Sr = np.maximum(I_Sr, 0)
+                I_Se = np.maximum(I_Se, 0)
+            if self.__step_bound1 is not None: 
+                I_Sr = cal_step_bound(I_Sr_former, I_Sr, self.__step_bound1)
+                I_Se = cal_step_bound(I_Se_former, I_Se, self.__step_bound1)
+            y_Sr = I_Sr + (k / (k + r)) * (I_Sr - I_Sr_former)
+            y_Se = I_Se + (k / (k + r)) * (I_Se - I_Se_former)
+            cost_x = self.__cost_f(I_Sr, I_Se, self.__rep_num)
+            opt_history.append((cost_x, cost_x + np.sum(np.abs(I_Sr)) * self.__regula_para *2 + np.sum(np.abs(I_Se)) * self.__regula_para , np.count_nonzero(I_Sr)+np.count_nonzero(I_Se)))
+            _print_opt_info(cost_x, I_Sr, I_Se, k, self.__regula_para)
             current_cost = cost_x  # + np.sum(np.abs(I_S)) * regul_factor
             if abs(current_cost - former_cost) < self.__stop_thresh * former_cost:
                 break
             else:
                 former_cost = current_cost
-                I_S_former = I_S
-        print('number of non-zero:', np.count_nonzero(I_S))
+                I_Sr_former = I_Sr
+                I_Se_former = I_Se
+        print('number of non-zero:', np.count_nonzero(I_Sr)+np.count_nonzero(I_Se))
         print_run_time('FISTA', t_s_FISTA)
-        path = os.path.join(self.__data_path, 'history_FISTA_' + str(I_S_0.shape[1]) +
+        path = os.path.join(self.__data_path, 'history_FISTA_Sr' + str(I_Sr_0.shape[1]) +'_Se' +str(I_Se_0.shape[1]) +
                             'nodes_' + datetime.now().strftime('%Y-%m-%d %H-%M') + '.pkl')
         my_dump(opt_history, path)
         print('FISTA terminated at', datetime.now().strftime('%Y-%m-%d %H-%M'))
-        return I_S, k
+        return I_Sr, I_Se, k
 
 
     def SGD(self, I_S_0, selected_location=None):
@@ -165,13 +179,13 @@ class SimOpt():
         return I_S
 
 
-    def two_stage_procedure(self, I_S_0, selected_location=None):
+    def two_stage_procedure(self, I_Sr_0,I_Se_0, selected_location=None):
         t_s = time()
-        I_S_1, _ = self.FISTA(I_S_0=I_S_0, selected_location=selected_location)
-        selected_location = np.where(np.abs(I_S_1) <= 0, 0, 1)  # np.where(I_S >= 1, 1, 0)
-        I_S_2 = self.SGD(I_S_0=I_S_1, selected_location=selected_location)
+        I_Sr_1, I_Se_1, _ = self.FISTA(I_Sr_0=I_Sr_0, I_Se_0=I_Se_0, selected_location=selected_location)
+        selected_location = np.where(np.abs(I_Sr_1) <= 0, 0, 1)  # np.where(I_S >= 1, 1, 0)
+        I_Sr_2,I_Se_2 = self.SGD(I_Sr_0=I_Sr_1,I_Se_0=I_Se_1, selected_location=selected_location)
         print_run_time('Two Stage Procedure', t_s)
-        return I_S_1, I_S_2
+        return I_Sr_1, I_Se_1, I_Sr_2, I_Se_2
 
 
 

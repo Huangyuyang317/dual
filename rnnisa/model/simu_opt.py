@@ -78,17 +78,18 @@ class SimOpt():
                 print('grad_r min:', format(np.min(grad_mean_r), '.3e'))
                 print('grad_e min:', format(np.min(grad_mean_e), '.3e'))
             I_Sr = prox((y_Sr - step_k * grad_mean_r), step_k * regula_para2)
-            I_Se = prox((y_Se - step_k * grad_mean_e), step_k * regula_para2)
+            I_Se = y_Se - step_k * grad_mean_e 
             if self.__positive_flag: 
                 I_Sr = np.maximum(I_Sr, 0)
                 I_Se = np.maximum(I_Se, 0)
+                I_Se = np.minimum(I_Se, I_Sr)
             if self.__step_bound1 is not None: 
                 I_Sr = cal_step_bound(I_Sr_former, I_Sr, self.__step_bound1)
                 I_Se = cal_step_bound(I_Se_former, I_Se, self.__step_bound1)
             y_Sr = I_Sr + (k / (k + r)) * (I_Sr - I_Sr_former)
             y_Se = I_Se + (k / (k + r)) * (I_Se - I_Se_former)
             cost_x = self.__cost_f(I_Sr, I_Se, self.__rep_num)
-            opt_history.append((cost_x, cost_x + np.sum(np.abs(I_Sr)) * self.__regula_para *2 + np.sum(np.abs(I_Se)) * self.__regula_para , np.count_nonzero(I_Sr)+np.count_nonzero(I_Se)))
+            opt_history.append((cost_x, cost_x + np.sum(np.abs(I_Sr)) * self.__regula_para , np.count_nonzero(I_Sr)))
             _print_opt_info(cost_x, I_Sr, I_Se, k, self.__regula_para)
             current_cost = cost_x  # + np.sum(np.abs(I_S)) * regul_factor
             if abs(current_cost - former_cost) < self.__stop_thresh * former_cost:
@@ -97,7 +98,7 @@ class SimOpt():
                 former_cost = current_cost
                 I_Sr_former = I_Sr
                 I_Se_former = I_Se
-        print('number of non-zero:', np.count_nonzero(I_Sr)+np.count_nonzero(I_Se))
+        print('number of non-zero:', np.count_nonzero(I_Sr))
         print_run_time('FISTA', t_s_FISTA)
         path = os.path.join(self.__data_path, 'history_FISTA_Sr' + str(I_Sr_0.shape[1]) +'_Se' +str(I_Se_0.shape[1]) +
                             'nodes_' + datetime.now().strftime('%Y-%m-%d %H-%M') + '.pkl')
@@ -106,77 +107,97 @@ class SimOpt():
         return I_Sr, I_Se, k
 
 
-    def SGD(self, I_S_0, selected_location=None):
+    def SGD(self, I_Sr_0, I_Se_0, selected_location=None):
         stop_thresh = self.__stop_thresh * self.__stop_thresh_ratio
         step_size = self.__step_size * self.__step_size_ratio
         print('SGD:', 'step_size', format(step_size, '.3e'),
               'stop_thresh', format(stop_thresh, '.3e'))
-        print('Initial Point', I_S_0)
+        print('Initial regular Point', I_Sr_0)
+        print('Initial emergency Point', I_Se_0)
         t_s_SGD = time()
         if selected_location is None:
-            I_S = I_S_0
+            I_Sr = I_Sr_0
+            I_Se = I_Se_0
         else:
-            I_S = np.multiply(I_S_0, selected_location)
+            I_Sr = np.multiply(I_Sr_0, selected_location)
+            I_Se = np.multiply(I_Se_0, selected_location)
         epoch_num = 0
         former_cost = 0
         opt_history = []
         while True:
             epoch_num += 1
-            avg_cost, grad_mean = self.__grad_f(I_S, self.__rep_num)
+            avg_cost, grad_mean_r, grad_mean_e = self.__grad_f(I_Sr, I_Se, self.__rep_num)
             if selected_location is not None:
-                grad_mean = np.multiply(grad_mean, selected_location)
+                grad_mean_r = np.multiply(grad_mean_r, selected_location)
+                grad_mean_e = np.multiply(grad_mean_e, selected_location)
             if self.__print_grad:
-                print('grad max:', format(np.max(grad_mean), '.3e'))
-                print('grad min:', format(np.min(grad_mean), '.3e'))
-            _print_opt_info(avg_cost, I_S, epoch_num)
-            opt_history.append((avg_cost, epoch_num, np.count_nonzero(I_S)))
+                print('grad_r max:', format(np.max(grad_mean_r), '.3e'))
+                print('grad_e max:', format(np.max(grad_mean_e), '.3e'))
+                print('grad_r min:', format(np.min(grad_mean_r), '.3e'))
+                print('grad_e min:', format(np.min(grad_mean_e), '.3e'))
+            _print_opt_info(avg_cost, I_Sr, I_Se, epoch_num)
+            opt_history.append((avg_cost, epoch_num, np.count_nonzero(I_Sr)))
             if abs(avg_cost - former_cost) < stop_thresh * former_cost:
                 break
             else:
                 former_cost = avg_cost
-            I_S_former = I_S
-            I_S = I_S - step_size * grad_mean * 101 / (epoch_num + 100)
-            if self.__positive_flag: I_S = np.maximum(I_S, 0)
-            if self.__step_bound2 is not None: I_S = cal_step_bound(I_S_former, I_S, self.__step_bound2)
+            I_Sr_former = I_Sr
+            I_Se_former = I_Se
+            I_Sr = I_Sr - step_size * grad_mean_r * 101 / (epoch_num + 100)
+            I_Se = I_Se - step_size * grad_mean_e * 101 / (epoch_num + 100)
+            if self.__positive_flag: 
+                I_Sr = np.maximum(I_Sr, 0)
+                I_Se = np.maximum(I_Se, 0)
+                I_Se = np.minimum(I_Se, I_Sr)
+            if self.__step_bound2 is not None: 
+                I_Sr = cal_step_bound(I_Sr_former, I_Sr, self.__step_bound2)
+                I_Se = cal_step_bound(I_Se_former, I_Se, self.__step_bound2)
 
-        print('number of non-zero:', np.count_nonzero(I_S))
+        print('number of non-zero:', np.count_nonzero(I_Sr))
         print_run_time('SGD', t_s_SGD)
-        path = os.path.join(self.__data_path, 'history_SGD_decay_' + str(I_S_0.shape[1]) +
+        path = os.path.join(self.__data_path, 'history_SGD_decay_Sr' + str(I_Sr_0.shape[1]) + '_Se' + str(I_Se_0.shape[1]) +
                             'nodes_' + datetime.now().strftime('%Y-%m-%d %H-%M') + '.pkl')
         my_dump(opt_history, path)
         print('optimization terminated at', datetime.now().strftime('%Y-%m-%d %H-%M'))
-        return I_S
+        return I_Sr, I_Se
 
 
-    def SSGD(self, I_S_0, max_epoch=np.inf):
-        print('Initial Point: ', I_S_0)
+    def SSGD(self, I_Sr_0, I_Se_0, max_epoch=np.inf):
+        print('Initial regular Point: ', I_Sr_0)
+        print('Initial emergency Point: ', I_Se_0)
         t_s_SSGD = time()
-        I_S = I_S_0
+        I_Sr = I_Sr_0
+        I_Se = I_Se_0
         epoch_num = 0
         former_cost = 0
         opt_history = []
         while True:
-            avg_cost, grad_mean = self.__grad_f(I_S, self.__rep_num)
-            _print_opt_info(avg_cost, I_S, epoch_num, self.__regula_para)
-            opt_history.append((avg_cost, epoch_num, avg_cost + np.sum(np.abs(I_S)) * self.__regula_para,
-                                np.count_nonzero(I_S)))
+            avg_cost, grad_mean_r, grad_mean_e = self.__grad_f(I_Sr, I_Se, self.__rep_num)
+            _print_opt_info(avg_cost, I_Sr, I_Se, epoch_num, self.__regula_para)
+            opt_history.append((avg_cost, epoch_num, avg_cost + np.sum(np.abs(I_Sr)) * self.__regula_para,
+                                np.count_nonzero(I_Sr)))
             if epoch_num == max_epoch: break
             current_cost = avg_cost  # + np.sum(np.abs(I_S)) * regul_factor
             if abs(current_cost - former_cost) < self.__stop_thresh * former_cost:  
                 break
             else:
                 former_cost = current_cost
-            grad2 = grad_mean + self.__regula_para * np.sign(I_S)
-            I_S = I_S - self.__step_size * grad2 * 50 / (epoch_num ** self.__decay_mode + 50) 
-            if self.__positive_flag: I_S = np.maximum(I_S, 0)
+            gradr2 = grad_mean_r + self.__regula_para * np.sign(I_Sr)
+            grade2 = grad_mean_e
+            I_Sr = I_Sr - self.__step_size * gradr2 * 50 / (epoch_num ** self.__decay_mode + 50) 
+            I_Se = I_Se - self.__step_size * grade2 * 50 / (epoch_num ** self.__decay_mode + 50)
+            if self.__positive_flag: 
+                I_Sr = np.maximum(I_Sr, 0)
+                I_Se = np.maximum(I_Se, 0)
+                I_Se = np.minimum(I_Se, I_Sr)
             epoch_num += 1
 
-        print('number of non-zero: ', np.count_nonzero(I_S))
+        print('number of non-zero: ', np.count_nonzero(I_Sr))
         print_run_time('SGD_subgradient', t_s_SSGD)
-        path = os.path.join(self.__data_path, 'history_SGD_subgradient_' + str(I_S_0.shape[1])
-                            + 'nodes_' + datetime.now().strftime('%Y-%m-%d %H-%M') + '.pkl')
+        path = os.path.join(self.__data_path, 'history_SGD_subgradient_Sr' + str(I_Sr_0.shape[1])
+                            + '_Se' + str(I_Se_0.shape[1]) + 'nodes_' + datetime.now().strftime('%Y-%m-%d %H-%M') + '.pkl')
         my_dump(opt_history, path)
-        return I_S
+        return I_Sr, I_Se
 
 
     def two_stage_procedure(self, I_Sr_0,I_Se_0, selected_location=None):
@@ -190,13 +211,13 @@ class SimOpt():
 
 
 
-def _print_opt_info(cost, I_S, epoch_num, regul_factor=None):
+def _print_opt_info(cost, I_Sr, I_Se, epoch_num, regul_factor=None):
     if regul_factor is not None:
-        print(',(', format(cost, '.3e'), ',', format(cost + np.sum(np.abs(I_S)) * regul_factor, '.3e'), ',',
-              np.count_nonzero(I_S), ',', epoch_num, ')')
+        print(',(', format(cost, '.3e'), ',', format(cost + np.sum(np.abs(I_Sr)) * regul_factor, '.3e'), ',',
+              np.count_nonzero(I_Sr), ',', epoch_num, ')')
     else:
         print(',(', format(cost, '.3e'), ',', epoch_num, ',',
-              np.count_nonzero(I_S), ')')
+              np.count_nonzero(I_Sr), ')')
 
 
 

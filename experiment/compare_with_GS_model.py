@@ -29,7 +29,7 @@ def run_rnn_optimization(data_type, nodes_num, sim, opt, I_S0_K):
 
 
 def run_rnn_spanning_tree_optimization(data_type, temp_path, nodes_num):
-    network_name_dict={10:"bom_kodak.pkl"}
+    network_name_dict={10:"bom_kodak_dual.pkl"}
     delivery_cycle_pkl_dict={10:'delivery_cycle-10nodes-2021-12-17 04-33.pkl'}
     step_size_dict={10:3.8e-2}
     regula_para_dict={10:1.2e4}

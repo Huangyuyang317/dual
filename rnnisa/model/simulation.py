@@ -40,7 +40,6 @@ class Simulation():
             
             maxlayer = 0
             for i in range(B.shape[0]):
-                
                 temp = B * temp
                 temp.eliminate_zeros()
                 if temp.nnz == 0:
@@ -56,9 +55,18 @@ class Simulation():
         self.__stage_num = count_layer(self.__B)
         self.__nodes_num = self.__B.shape[0]
 
-        self.__hold_coef = np.array(list(nx.get_node_attributes(G, 'holdcost').values()), dtype=data_type)
-        self.__hold_coef = np.expand_dims(self.__hold_coef, axis=0)
-        self.__lead_time = np.array(list(nx.get_node_attributes(G, 'leadtime').values()))
+        is_dual = list(nx.get_node_attributes(G, 'is_dual_source').values())
+        self.__is_dual_mask = np.array(is_dual, dtype=data_type).reshape(1, -1)
+        
+        self.__c_fast = np.array(list(nx.get_node_attributes(G, 'cost_fast').values()), dtype=data_type).reshape(1, -1)
+        self.__c_slow = np.array(list(nx.get_node_attributes(G, 'cost_slow').values()), dtype=data_type).reshape(1, -1)
+        self.__lt_fast = np.array(list(nx.get_node_attributes(G, 'lt_fast').values()), dtype=int)
+        self.__lt_slow = np.array(list(nx.get_node_attributes(G, 'lt_slow').values()), dtype=int)
+
+
+        self.__delta_lt = self.__lt_slow - self.__lt_fast
+
+        self.__hold_coef = np.array(list(nx.get_node_attributes(G, 'holdcost').values()), dtype=data_type).reshape(1, -1)
 
         self.__D_mean = np.zeros((self.__duration, self.__nodes_num))  
         self.__std = np.zeros_like(self.__D_mean)
@@ -70,7 +78,11 @@ class Simulation():
                 self.__D_mean[range(self.__duration), i] = G.nodes[nd]['mean']
                 self.__std[range(self.__duration), i] = G.nodes[nd]['std']
             i += 1
-
+        self.__ts_fast = np.zeros((self.__duration, self.__nodes_num), dtype=int)
+        self.__ts_slow = np.zeros((self.__duration, self.__nodes_num), dtype=int)
+        for t in range(self.__duration):
+            self.__ts_fast[t, :] = np.minimum(t + self.__lt_fast, self.__duration)
+            self.__ts_slow[t, :] = np.minimum(t + self.__lt_slow, self.__duration)
         self.__demand_set = demand_node
 
         self.__penalty_coef = data_type(penalty_factor) * self.__hold_coef
@@ -94,25 +106,22 @@ class Simulation():
         out_degree_values = np.expand_dims(np.array([v for k, v in G.out_degree()]), axis=0)
         self.__raw_material_node = np.where(out_degree_values == 0, self.__one, self.__zero)
 
+        self.__c_fast = self.__c_fast * self.__raw_material_node
+        self.__c_slow = self.__c_slow * self.__raw_material_node
+
         mau_item = self.__one - self.__raw_material_node
         self.__mau_item_diag = diags(mau_item[0])
 
         idx_mau = np.nonzero(1 - self.__raw_material_node)[1]
         self.__B_indices_list = {i: self.__B[i].indices for i in
                                  idx_mau}
-        time_stamp = np.zeros((self.__duration, self.__nodes_num), dtype=int)
-
-        time_stamp[:, :] = self.__lead_time
-        time_stamp[:, :] = time_stamp[:, :] + np.expand_dims(np.array(list(range(self.__duration))), axis=1)
-        self.__time_stamp = time_stamp
-        self.__time_stamp_truncated = np.minimum(time_stamp, self.__duration)
 
         if type(delivery_cycle) == int:
             delivery_cycles = delivery_cycle * np.ones(self.__nodes_num, dtype=int)
         else:
             delivery_cycles = my_load(os.path.join(data_path, delivery_cycle))
 
-        self.__delivery_shift = np.zeros_like(time_stamp)
+        self.__delivery_shift = np.zeros((self.__duration, self.__nodes_num), dtype=int)
         for t in range(self.__duration):
             self.__delivery_shift[t, self.__demand_set] = t - delivery_cycles[self.__demand_set]
         self.__delivery_shift = np.maximum(-1, self.__delivery_shift)
@@ -143,7 +152,7 @@ class Simulation():
         demand_set = self.__demand_set
         delivery_shift = self.__delivery_shift
         for t in range(self.__duration):
-            D_order[t, demand_set] = [normalvariate(D_mean[t, i], std[t, i]) for i in demand_set]
+            D_order[t, demand_set] = np.random.normal(D_mean[t, demand_set], std[t, demand_set])
             D[t, demand_set] = D_order[delivery_shift[t, demand_set], demand_set]
             
         D_order = np.maximum(self.__zero, D_order)
@@ -1225,9 +1234,9 @@ class Simulation():
 
         return cost
 
-    def evaluate_cost_gradient(self, I_S, eval_num=30, mean_flag=True):
+    def evaluate_cost_gradient(self, I_Sr, I_Se, eval_num=30, mean_flag=True):
         process_num = min(CORE_NUM, eval_num)
-        I_S_list = [(I_S, self.__duration, self.__nodes_num, self.__zero, self.__one, self.__one_minus, self.__stage_num
+        I_S_list = [(I_Sr, I_Se, self.__duration, self.__nodes_num, self.__zero, self.__one, self.__one_minus, self.__stage_num
                      , self.__lead_time, self.__data_type, self.__B_indices_list, self.__equal_tole
                      , self.__hold_coef, self.__penalty_coef, self.__mau_item_diag, self.__raw_material_node, self.__B
                      , self.__B_T, self.__E_B_T, self.__time_stamp_truncated, self.__D_mean, self.__std,
@@ -1251,11 +1260,11 @@ class Simulation():
 def _generate_random_demand_parallel(duration, nodes_num, data_type, D_mean, std, demand_set, delivery_shift,
                                      zero, rand_seed):
     if rand_seed is not None:
-        seed(rand_seed)
+        np.random.seed(rand_seed)
     D = np.zeros((duration, nodes_num), dtype=data_type)
     D_order = np.zeros((duration + 1, nodes_num), dtype=data_type)
     for t in range(duration):
-        D_order[t, demand_set] = [normalvariate(D_mean[t, i], std[t, i]) for i in demand_set]
+        D_order[t, demand_set] = np.random.normal(D_mean[t, demand_set], std[t, demand_set])
         D[t, demand_set] = D_order[delivery_shift[t, demand_set], demand_set]
 
     D_order = np.maximum(zero, D_order)

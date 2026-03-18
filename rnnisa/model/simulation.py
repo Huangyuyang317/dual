@@ -1237,7 +1237,7 @@ class Simulation():
     def evaluate_cost_gradient(self, I_Sr, I_Se, eval_num=30, mean_flag=True):
         process_num = min(CORE_NUM, eval_num)
         I_S_list = [(I_Sr, I_Se, self.__duration, self.__nodes_num, self.__zero, self.__one, self.__one_minus, self.__stage_num
-                     , self.__lead_time, self.__data_type, self.__B_indices_list, self.__equal_tole
+                     , self.__lt_fast, self.__data_type, self.__B_indices_list, self.__equal_tole
                      , self.__hold_coef, self.__penalty_coef, self.__mau_item_diag, self.__raw_material_node, self.__B
                      , self.__B_T, self.__E_B_T, self.__time_stamp_truncated, self.__D_mean, self.__std,
                      self.__demand_set, self.__delivery_shift, i + self.__seed_num) for i in range(eval_num)]
@@ -1273,13 +1273,17 @@ def _generate_random_demand_parallel(duration, nodes_num, data_type, D_mean, std
 
 
 def _simulate_and_bp_parallel(args):
-    (I_S, duration, nodes_num, zero, one, one_minus, stage_num, lead_time, data_type
-     , B_indices_list, equal_tole, hold_coef, penalty_coef, mau_item_diag, raw_material_node
-     , B, B_T, E_B_T, time_stamp, D_mean, std, demand_set, delivery_shift, rand_seed) = args
-    minimum = np.minimum
-    maximum = np.maximum
-    where = np.where
+    # 1. 参数解包
+    (I_Sr, I_Se, duration, nodes_num, zero, one, one_minus, stage_num,
+     lt_slow, lt_slow, data_type, B_indices_list, equal_tole,
+     hold_coef, penalty_coef, c_fast, c_slow, mau_item_diag, raw_material_node,
+     B, B_T, E_B_T, ts_fast, ts_slow, delta_lt, 
+     D_mean, std, demand_set, delivery_shift, rand_seed) = args
 
+    # 快捷引用
+    maximum = np.maximum
+    minimum = np.minimum
+    where = np.where
     nonzero = np.nonzero
     np_abs = np.abs
     zeros_like = np.zeros_like
@@ -1292,133 +1296,171 @@ def _simulate_and_bp_parallel(args):
 
     M_backlog = np.zeros((1, nodes_num), dtype=data_type)
     P = np.zeros((duration + 1, nodes_num), dtype=data_type)
-
+    Pr = np.zeros((duration + int(np.max(lt_slow)) + 1, nodes_num), dtype=data_type)
     D_backlog = zeros_like(M_backlog)
-
-    I_t = I_S + zero
-    I_position = I_S + zero
+    I_t = I_Sr + zero
+    I_Pr = I_Sr + zero
+    I_Pe = I_Se + zero
     cost = zero
-
-    d_It_d_Yt = []
-    d_Dback_d_Yt = []
-    d_O_d_Ipformer = [[] for _ in range(duration)]
-
-    d_M_d_man_o = [zeros_like(M_backlog) for _ in range(duration)]
+    
+    # 梯度记录容器 (用于 BP)
+    d_It_d_Yt, d_Dback_d_Yt = [], []
+    d_Or_d_IPr_stack = [[] for _ in range(duration)]
+    d_Oe_d_IPe_stack = [[] for _ in range(duration)]
+    d_M_d_man_o = [zeros_like(I_Sr) for _ in range(duration)]
     d_M_d_r_r = [{} for _ in range(duration)]
-    d_r_r_d_I = []
-    d_r_r_d_r_n = []
+    d_r_r_d_I, d_r_r_d_r_n = [], []
 
-
+    # ================= 前向仿真 (严格模仿原模板，仅使用 Pr 矩阵) =================
     for t in range(duration):
-        I_position = I_position - D_order[t, :]
-        O_t = -minimum(zero, (I_position - I_S))
-        flag = where((I_position - I_S) < 0, one_minus, zero)
-        d_O_d_Ipformer[t].insert(0, diags(flag[0]))
+        I_Pr = I_Pr - D_order[t, :]
+        I_Pe = I_Pe - D_order[t, :]
+        I_Pe = I_Pe + Pr[t, :]
+
+        # 3. DIP 下单决策与梯度记录 (Algorithm 1 Line 5-6 & Algorithm 2 Line 2-3)
+        Oe_t = maximum(zero, I_Se - I_Pe) * raw_material_node
+        flag_e = where(I_Se - I_Pe > 0, one_minus, zero) * raw_material_node
+        d_Oe_d_IPe_stack[t].insert(0, diags((flag_e)[0])) # dOe/dIPe = -1
+        
+        Or_t = maximum(zero, I_Sr - (I_Pr + Oe_t))
+        flag_r = where(I_Sr - (I_Pr + Oe_t) > 0, one_minus, zero)
+        d_Or_d_IPr_stack[t].insert(0, diags((flag_r)[0])) # dOr/dIPr = -1
+
+        # 4. BOM 多层级联逻辑 (ς = 1 to nL - 1)
         for _ in range(stage_num - 1):
-            temp_I_position = I_position - O_t * B
-            O_t = -minimum(zero, (temp_I_position - I_S))
-            flag = where((temp_I_position - I_S) < 0, one_minus, zero)
-            d_O_d_Ipformer[t].insert(0, diags(flag[0]))
-        I_position = I_position - O_t * B + O_t
+            temp_internal_D = (Or_t + Oe_t).dot(B_T)
+            # 计算中间变量下单量
+            Oe_t = maximum(zero, I_Se - (I_Pe - temp_internal_D)) * raw_material_node
+            flag_e = where(I_Se - (I_Pe - temp_internal_D) > 0, one_minus, zero) * raw_material_node
+            d_Oe_d_IPe_stack[t].insert(0, diags((flag_e)[0]))
+            
+            Or_t = maximum(zero, I_Sr - (I_Pr - temp_internal_D + Oe_t))
+            flag_r = where(I_Sr - (I_Pr - temp_internal_D + Oe_t) > 0, one_minus, zero)
+            d_Or_d_IPr_stack[t].insert(0, diags((flag_r)[0]))
 
-        temp_I_t = I_t - D_backlog - D[t] + P[t]
-        I_t = maximum(zero, temp_I_t)
-        flag = where(temp_I_t > 0, one, zero)
-        d_It_d_Yt.append(diags(flag[0]))
-        D_backlog = -minimum(zero, temp_I_t)
-        flag = where(temp_I_t <= 0, one_minus, zero)
-        d_Dback_d_Yt.append(diags(flag[0]))
+        # 5. 更新矩阵与缓冲区 (核心改动：用 Pr 替代记录)
+        # 将本期下的普通单投递到未来的“进入窗口”时刻 (t + delta_L)
+        Pr[t + delta_lt, range(nodes_num)] = Or_t[0, :]
+        
+        # 物理到货更新
+        P[ts_fast[t, :], range(nodes_num)] += Oe_t[0, :]
+        P[ts_slow[t, :], range(nodes_num)] += Or_t[0, :]
 
-        purchase_order = O_t * raw_material_node
-        mau_order = O_t - purchase_order + M_backlog
-        idx_purch = nonzero(purchase_order)[1]
-        idx_mau = nonzero(mau_order)[1]
+        # 6. 更新库存位置准备下一期 (模仿模板：I_position = I_position - O_t * B + O_t)
+        # 注意：Or_t 已经存入 Pr 了，所以此时 I_Pr 直接加，而 I_Pe 暂时不加（等未来进入窗口再加）
+        total_O_t = Or_t + Oe_t
+        internal_D_t = total_O_t.dot(B_T)
+        I_Pr = I_Pr + total_O_t - internal_D_t
+        I_Pe = I_Pe + Oe_t - internal_D_t
 
-        resource_needed = mau_order * B
-        temp_resource_rate = I_t / resource_needed
+        # 7. 实物库存演化 (完全保持原模板风格)
+        temp_I_val = I_t - D_backlog - D[t:t+1, :] + P[t:t+1, :]
+        I_t = maximum(zero, temp_I_val)
+        d_It_d_Yt.append(diags(where(temp_I_val > 0, one, zero)[0]))
+        D_backlog = -minimum(zero, temp_I_val)
+        d_Dback_d_Yt.append(diags(where(temp_I_val <= 0, one_minus, zero)[0]))
 
-        temp_resource_rate[resource_needed == 0] = one
+        # 8. 制造分配逻辑 (完全保持原模板风格)
+        mau_o = total_O_t * (1 - raw_material_node) + M_backlog
+        idx_mau = nonzero(mau_o)[1]
+        res_needed = mau_o.dot(B)
+        temp_rate = I_t / maximum(data_type(1e-9), res_needed)
+        res_rate = minimum(one, temp_rate)
+        
+        # 记录制造梯度信息 (Algorithm 3 Line 9)
+        flag_res = where(temp_rate < 1, one, zero)
+        inv_res = one / maximum(data_type(1e-9), res_needed)
+        d_r_r_d_I.append(diags(np_multiply(flag_res, inv_res)[0]))
+        d_r_r_d_r_n.append(diags(np_multiply(flag_res, -np_multiply(temp_rate, inv_res))[0]))
 
-        temp1 = one / resource_needed
-        temp1[resource_needed == 0] = one
-        temp2 = -np_multiply(temp_resource_rate, temp1)
-        resource_rate = minimum(one, temp_resource_rate)
-        flag2 = where(temp_resource_rate < 1, one, zero)
-        d_r_r_d_I.append(
-            diags(np_multiply(flag2, temp1)[
-                      0]))
-        d_r_r_d_r_n.append(
-            diags(np_multiply(flag2, temp2)[
-                      0]))
+        M_actual = zeros_like(I_Sr)
+        min_rate = np_array([res_rate[0, B_indices_list[idx]].min() if len(B_indices_list[idx]) > 0 else 1.0 for idx in idx_mau])
+        M_actual[0, idx_mau] = min_rate * mau_o[0, idx_mau]
+        
+        # 记录回传索引 (Algorithm 3 Line 13)
+        for i, idx in enumerate(idx_mau):
+            if min_rate[i] > 0:
+                col = B_indices_list[idx]
+                col2 = col[np_abs(res_rate[0, col] - min_rate[i]) < equal_tole]
+                d_M_d_r_r[t][idx] = (data_type(1.0/len(col2)) * mau_o[0, idx], col2)
+        d_M_d_man_o[t][0, idx_mau] = min_rate
 
-        P[time_stamp[t, idx_purch], idx_purch] = purchase_order[0, idx_purch]
-        M_actual = zeros_like(M_backlog)
-        min_rate = np_array([resource_rate[0, B_indices_list[index]].min() for index in idx_mau])
-        M_actual[0, idx_mau] = min_rate * mau_order[0, idx_mau]
-        col2 = [B_indices_list[idx_mau[i]][np_abs(resource_rate[0, B_indices_list[idx_mau[i]]] - min_rate[i])
-                                           < equal_tole] for i in range(len(idx_mau))]
-        d_M_d_r_r[t] = {idx_mau[i]: (data_type(1.0 / len(col2[i])) * mau_order[0, idx_mau[i]], col2[i]) for i
-                        in range(len(idx_mau)) if min_rate[i] > 0}
-        d_M_d_man_o[t][0, idx_mau] = min_rate + zero
+        # 制造产出到货与状态更新
+        P[ts_slow[t, idx_mau], idx_mau] += M_actual[0, idx_mau]
+        I_t = I_t - M_actual.dot(B)
+        M_backlog = mau_o - M_actual
 
-        P[time_stamp[t, idx_mau], idx_mau] = M_actual[0, idx_mau]
-        M_backlog = mau_order - M_actual
+        # 9. 成本累加 (持有 + 缺货 + 采购成本)
+        cost += np_sum(np_multiply(I_t, hold_coef)) + np_sum(np_multiply(D_backlog, penalty_coef))
+        cost += np_sum(np_multiply(Or_t, c_slow)) + np_sum(np_multiply(Oe_t, c_fast))
 
-        I_t = I_t - M_actual * B
-
-        cost = cost + np_sum(np_multiply(I_t, hold_coef)) + np_sum(
-            np_multiply(D_backlog, penalty_coef))
-    d_S = zeros_like(M_backlog)
-
-    d_It = hold_coef + zero
-    d_Dback = penalty_coef + zero
-    d_Ipt = zeros_like(M_backlog)
-    d_Mt_backlog = zeros_like(M_backlog)
-
-    d_O = np.zeros((duration, 1, nodes_num), dtype=data_type)
-
-    d_P_d_Mq = zeros_like(d_O)
+    # ================= [5] 反向传播循环 (BPTT) =================
+    d_Sr, d_Se = zeros_like(I_Sr), zeros_like(I_Se)
+    d_It, d_Dback = hold_coef + zero, penalty_coef + zero
+    d_IPr, d_IPe = zeros_like(I_Sr), zeros_like(I_Se)
+    d_Mt_back = zeros_like(I_Sr)
+    
+    # 跨时步梯度投递缓冲区 (替代 List 1-6)
+    d_Pr_buf = np.zeros_like(Pr)
+    d_P_buf = np.zeros_like(P)
 
     for t in range(duration - 1, -1, -1):
-        d_Mact = - d_It * B_T
-        d_Mq = d_Mact - d_Mt_backlog + d_P_d_Mq[t]
-        d_mau_o = d_Mt_backlog + np_multiply(d_Mq, d_M_d_man_o[t])
-        d_res_r = zeros_like(M_backlog)
-        for index in d_M_d_r_r[t]:
-            temp_k = d_M_d_r_r[t][index][0] * d_Mq[0, index]
-            col2_list = d_M_d_r_r[t][index][1]
-            d_res_r[0, col2_list] = d_res_r[0, col2_list] + temp_k
+        # (1) 物理实物梯度回传
+        d_Mact = - d_It.dot(B_T) + d_P_buf[t, :]
+        d_Mq = d_Mact - d_Mt_back
+        
+        d_res_r = zeros_like(I_Sr)
+        for idx in d_M_d_r_r[t]:
+            val, cols = d_M_d_r_r[t][idx]
+            d_res_r[0, cols] += val * d_Mq[0, idx]
+            
+        d_It += d_res_r.dot(d_r_r_d_I[t])
+        d_mau_o = d_Mt_back + np_multiply(d_Mq, d_M_d_man_o[t]) + (d_res_r.dot(d_r_r_d_r_n[t])).dot(B_T)
 
-        d_It = d_It + d_res_r * d_r_r_d_I[t]
-        d_res_n = d_res_r * d_r_r_d_r_n[t]
-        d_mau_o = d_mau_o + d_res_n * B_T
-        d_O[t] = d_O[t] + d_mau_o * mau_item_diag
-        d_Yt = d_It * d_It_d_Yt[t] + d_Dback * d_Dback_d_Yt[t]
-        d_O[t] = d_O[t] + d_Ipt * E_B_T
-        d_temp_O = d_O[t] + zero
-        for i in range(stage_num - 1):
-            d_temp_Ipt = d_temp_O * d_O_d_Ipformer[t][i]
-            d_S = d_S - d_temp_Ipt
-            d_Ipt = d_Ipt + d_temp_Ipt
-            d_temp_O = -d_temp_Ipt * B_T
-        temp_d_Ipt = d_temp_O * d_O_d_Ipformer[t][stage_num - 1]
-        d_S = d_S - temp_d_Ipt
-        d_Ipt = d_Ipt + temp_d_Ipt
+        # (2) 策略层梯度 (DIP 嵌套)
+        d_Or_step = d_mau_o + c_slow
+        d_Oe_step = d_mau_o * raw_material_node + c_fast
+        
+        # 加上来自实物到货通道 P 的投递梯度
+        for i in range(nodes_num):
+            d_Oe_step[0, i] += d_P_buf[ts_fast[t, i], i]
+            d_Or_step[0, i] += d_P_buf[ts_slow[t, i], i]
+        
+        # 嵌套 BOM 层级回传
+        for i in range(stage_num):
+            d_temp_IPr = d_Or_step.dot(d_Or_d_IPr_stack[t][i])
+            d_Sr -= d_temp_IPr
+            d_IPr += d_temp_IPr
+            d_Oe_step += d_temp_IPr # Or 依赖 Oe 的联动导数
+            
+            d_temp_IPe = d_Oe_step.dot(d_Oe_d_IPe_stack[t][i])
+            d_Se -= d_temp_IPe
+            d_IPe += d_temp_IPe
+            
+            d_Or_step = - (d_temp_IPr + d_temp_IPe).dot(B_T)
+            d_Oe_step = d_Or_step * raw_material_node
+
+        # (3) 状态与缓冲区梯度回传 (时滞处理)
+        d_Yt = d_It.dot(d_It_d_Yt[t]) + d_Dback.dot(d_Dback_d_Yt[t])
+        
+        # Pr 传送带回传：将 IPe 的影响传回下单时刻的普通订单
+        for i in range(nodes_num):
+            target_idx = t + delta_lt[i]
+            d_Pr_buf[target_idx, i] += d_IPe[0, i]
+        
+        # 叠加 Pr 缓冲区中累积的梯度到当前普通单
+        d_Or_step += d_Pr_buf[t, :]
+
         if t > 0:
-            d_Mt_backlog = d_mau_o + zero
+            d_Mt_back = d_mau_o + zero
             d_It = d_Yt + hold_coef
             d_Dback = -d_Yt + penalty_coef
-
-            d_P_d_Mqty_item = nonzero(P[t]*mau_item_diag)[0]
-            d_P_d_Mq[t - lead_time[d_P_d_Mqty_item], 0, d_P_d_Mqty_item] = d_Yt[0, d_P_d_Mqty_item]
-
-            d_P_d_O_item = nonzero(P[t]*raw_material_node)[0]
-            d_O[t - lead_time[d_P_d_O_item], 0, d_P_d_O_item] = d_Yt[0, d_P_d_O_item]
-
+            d_P_buf[t, :] += d_Yt[0, :]
         else:
-            d_S = d_S + d_Yt
-            d_S = d_S + d_Ipt
-    return cost, d_S
+            d_Sr += (d_Yt + d_IPr)
+            d_Se += (d_Yt + d_IPe)
+
+    return cost, d_Sr, d_Se
 
 
 def _simulate_only_parallel(args):

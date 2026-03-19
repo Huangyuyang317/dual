@@ -19,7 +19,7 @@ def run_rnn_optimization(data_type, nodes_num, sim, opt, I_S0_K):
     I_Sr0[0, sim.get_demand_set()] = 40
 
     I_Se0 = data_type(0) * np.ones((1, nodes_num), dtype=data_type)
-    I_Sr0[0, sim.get_raw_nodes()] = (I_S0_K//2)
+    I_Se0[0, sim.get_raw_nodes()] = (I_S0_K//2)
     
     _, _, I_Sr,I_Se = opt.two_stage_procedure(I_Sr0,I_Se0)
     if I_Sr.shape[0] < 20:
@@ -48,7 +48,7 @@ def run_rnn_spanning_tree_optimization(data_type, temp_path, nodes_num):
                           stop_thresh=stop_thresh_dict[nodes_num], positive_flag=True, cost_f=sim.evaluate_cost,
                           grad_f=sim.evaluate_cost_gradient, step_bound=step_bound_dict[nodes_num],
                           stop_thresh_ratio=stop_thresh_ratio_dict[nodes_num],
-                          step_size_ratio=step_size_ratio_dict[nodes_num], decay_mode=2)
+                          step_size_ratio=step_size_ratio_dict[nodes_num], decay_mode=2, raw_nodes=sim.raw_node)
     run_rnn_optimization(data_type=data_type, nodes_num=nodes_num, sim=sim, opt=opt, I_S0_K=I_S0_K_dict[nodes_num])
 
 

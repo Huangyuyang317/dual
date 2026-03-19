@@ -15,7 +15,7 @@ from rnnisa.utils.tool_function import print_run_time, my_dump
 
 class SimOpt():
     def __init__(self, data_path, rep_num, step_size, regula_para, stop_thresh, positive_flag,
-                 cost_f, grad_f, step_bound=None, step_size_ratio=1.0, stop_thresh_ratio=1.0, decay_mode=1,
+                 cost_f, grad_f, raw_nodes, step_bound=None, step_size_ratio=1.0, stop_thresh_ratio=1.0, decay_mode=1, 
                  print_grad=False):
 
         print('Optimization parameters:', 'rep_num', rep_num, 'regula_para',
@@ -30,6 +30,7 @@ class SimOpt():
         self.__decay_mode = decay_mode
         self.__grad_f = grad_f
         self.__cost_f = cost_f
+        self.__raw_nodes = raw_nodes
         if step_bound is None:
             self.__step_bound1 = None
             self.__step_bound2 = None
@@ -98,6 +99,7 @@ class SimOpt():
                 former_cost = current_cost
                 I_Sr_former = I_Sr
                 I_Se_former = I_Se
+        I_Se = I_Se * self.__raw_nodes
         print('number of non-zero:', np.count_nonzero(I_Sr))
         print_run_time('FISTA', t_s_FISTA)
         path = os.path.join(self.__data_path, 'history_FISTA_Sr' + str(I_Sr_0.shape[1]) +'_Se' +str(I_Se_0.shape[1]) +
@@ -152,7 +154,7 @@ class SimOpt():
             if self.__step_bound2 is not None: 
                 I_Sr = cal_step_bound(I_Sr_former, I_Sr, self.__step_bound2)
                 I_Se = cal_step_bound(I_Se_former, I_Se, self.__step_bound2)
-
+        I_Se = I_Se * self.__raw_nodes
         print('number of non-zero:', np.count_nonzero(I_Sr))
         print_run_time('SGD', t_s_SGD)
         path = os.path.join(self.__data_path, 'history_SGD_decay_Sr' + str(I_Sr_0.shape[1]) + '_Se' + str(I_Se_0.shape[1]) +
@@ -191,7 +193,7 @@ class SimOpt():
                 I_Se = np.maximum(I_Se, 0)
                 I_Se = np.minimum(I_Se, I_Sr)
             epoch_num += 1
-
+        I_Se = I_Se * self.__raw_nodes
         print('number of non-zero: ', np.count_nonzero(I_Sr))
         print_run_time('SGD_subgradient', t_s_SSGD)
         path = os.path.join(self.__data_path, 'history_SGD_subgradient_Sr' + str(I_Sr_0.shape[1])
@@ -202,9 +204,9 @@ class SimOpt():
 
     def two_stage_procedure(self, I_Sr_0,I_Se_0, selected_location=None):
         t_s = time()
-        I_Sr_1, I_Se_1, _ = self.FISTA(I_Sr_0=I_Sr_0, I_Se_0=I_Se_0, selected_location=selected_location)
+        I_Sr_1, I_Se_1, _ = self.FISTA(I_Sr_0=I_Sr_0, I_Se_0=I_Se_0*self.__raw_nodes, selected_location=selected_location)
         selected_location = np.where(np.abs(I_Sr_1) <= 0, 0, 1)  # np.where(I_S >= 1, 1, 0)
-        I_Sr_2,I_Se_2 = self.SGD(I_Sr_0=I_Sr_1,I_Se_0=I_Se_1, selected_location=selected_location)
+        I_Sr_2,I_Se_2 = self.SGD(I_Sr_0=I_Sr_1,I_Se_0=I_Se_1*self.__raw_nodes, selected_location=selected_location)
         print_run_time('Two Stage Procedure', t_s)
         return I_Sr_1, I_Se_1, I_Sr_2, I_Se_2
 

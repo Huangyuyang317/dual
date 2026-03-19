@@ -23,6 +23,7 @@ class Simulation():
         self.__duration = duration
         self.__data_type = data_type
         self._prepare_data(data_path, network_name, penalty_factor, data_type, delivery_cycle)
+        self.raw_node = self.__raw_material_node
         self.__seed_num = 0
         self._print_info()
 
@@ -1217,14 +1218,15 @@ class Simulation():
             _print_cost_grad_info(cost, gradient)
         return cost, gradient
 
-    def evaluate_cost(self, I_S, eval_num=30):
+    def evaluate_cost(self, I_Sr, I_Se, eval_num=30):
         process_num = min(CORE_NUM, eval_num)
         if self.__nodes_num == 500000: process_num = min(process_num, 30)
         if self.__nodes_num == 100000: process_num = min(process_num, 50)
 
-        I_S_list = [(I_S, self.__duration, self.__nodes_num, self.__zero, self.__one, self.__stage_num
-                     , self.__data_type, self.__B_indices_list, self.__hold_coef, self.__penalty_coef,
-                     self.__raw_material_node, self.__B, self.__time_stamp_truncated, self.__D_mean, self.__std,
+        I_S_list = [(I_Sr, I_Se, self.__duration, self.__nodes_num, self.__zero, self.__one, self.__one_minus, self.__stage_num
+                     , self.__lt_fast, self.__data_type, self.__B_indices_list, self.__equal_tole
+                     , self.__hold_coef, self.__penalty_coef, self.__mau_item_diag, self.__raw_material_node, self.__B
+                     , self.__B_T, self.__E_B_T, self.__time_stamp_truncated, self.__D_mean, self.__std,
                      self.__demand_set, self.__delivery_shift, i + self.__seed_num) for i in range(eval_num)]
         self.__seed_num += eval_num
         with Pool(process_num) as pool:
@@ -1341,10 +1343,6 @@ def _simulate_and_bp_parallel(args):
         # 5. 更新矩阵与缓冲区 (核心改动：用 Pr 替代记录)
         # 将本期下的普通单投递到未来的“进入窗口”时刻 (t + delta_L)
         Pr[t + delta_lt, range(nodes_num)] = Or_t[0, :]
-        
-        # 物理到货更新
-        P[ts_fast[t, :], range(nodes_num)] += Oe_t[0, :]
-        P[ts_slow[t, :], range(nodes_num)] += Or_t[0, :]
 
         # 6. 更新库存位置准备下一期 (模仿模板：I_position = I_position - O_t * B + O_t)
         # 注意：Or_t 已经存入 Pr 了，所以此时 I_Pr 直接加，而 I_Pe 暂时不加（等未来进入窗口再加）
@@ -1354,35 +1352,43 @@ def _simulate_and_bp_parallel(args):
         I_Pe = I_Pe + Oe_t - internal_D_t
 
         # 7. 实物库存演化 (完全保持原模板风格)
-        temp_I_val = I_t - D_backlog - D[t:t+1, :] + P[t:t+1, :]
+        temp_I_val = I_t - D_backlog - D[t] + P[t]
         I_t = maximum(zero, temp_I_val)
         d_It_d_Yt.append(diags(where(temp_I_val > 0, one, zero)[0]))
         D_backlog = -minimum(zero, temp_I_val)
         d_Dback_d_Yt.append(diags(where(temp_I_val <= 0, one_minus, zero)[0]))
 
-        # 8. 制造分配逻辑 (完全保持原模板风格)
-        mau_o = total_O_t * (1 - raw_material_node) + M_backlog
+        purchase_order_e = Oe_t * raw_material_node
+        purchase_order_r = Or_t * raw_material_node
+        mau_o = Oe_t + Or_t - purchase_order_e - purchase_order_r + M_backlog
+        idx_purch = nonzero(raw_material_node)[1] 
         idx_mau = nonzero(mau_o)[1]
+
+        P[ts_fast[t, idx_purch], idx_purch] += purchase_order_e[0, idx_purch]
+        P[ts_slow[t, idx_purch], idx_purch] += purchase_order_r[0, idx_purch]
+
+        # 8. 制造分配逻辑 (完全保持原模板风格)
         res_needed = mau_o.dot(B)
-        temp_rate = I_t / maximum(data_type(1e-9), res_needed)
+        temp_rate = I_t / res_needed
+        temp_rate[res_needed == 0] = one
         res_rate = minimum(one, temp_rate)
         
         # 记录制造梯度信息 (Algorithm 3 Line 9)
         flag_res = where(temp_rate < 1, one, zero)
-        inv_res = one / maximum(data_type(1e-9), res_needed)
+        inv_res = one / res_needed
+        inv_res[res_needed == 0] = one
         d_r_r_d_I.append(diags(np_multiply(flag_res, inv_res)[0]))
         d_r_r_d_r_n.append(diags(np_multiply(flag_res, -np_multiply(temp_rate, inv_res))[0]))
 
-        M_actual = zeros_like(I_Sr)
+        M_actual = zeros_like(M_backlog)
         min_rate = np_array([res_rate[0, B_indices_list[idx]].min() if len(B_indices_list[idx]) > 0 else 1.0 for idx in idx_mau])
         M_actual[0, idx_mau] = min_rate * mau_o[0, idx_mau]
         
         # 记录回传索引 (Algorithm 3 Line 13)
-        for i, idx in enumerate(idx_mau):
-            if min_rate[i] > 0:
-                col = B_indices_list[idx]
-                col2 = col[np_abs(res_rate[0, col] - min_rate[i]) < equal_tole]
-                d_M_d_r_r[t][idx] = (data_type(1.0/len(col2)) * mau_o[0, idx], col2)
+        col2 = [B_indices_list[idx_mau[i]][np_abs(res_rate[0, B_indices_list[idx_mau[i]]] - min_rate[i]) < equal_tole] 
+             for i in range(len(idx_mau))]
+        d_M_d_r_r[t] = {idx_mau[i]: (data_type(1.0 / len(col2[i])) * mau_o[0, idx_mau[i]], col2[i]) for i in range(len(idx_mau)) 
+            if min_rate[i] > 0}
         d_M_d_man_o[t][0, idx_mau] = min_rate
 
         # 制造产出到货与状态更新
@@ -1391,10 +1397,8 @@ def _simulate_and_bp_parallel(args):
         M_backlog = mau_o - M_actual
 
         # 9. 成本累加 (持有 + 缺货 + 采购成本)
-        cost += np_sum(np_multiply(I_t, hold_coef)) + np_sum(np_multiply(D_backlog, penalty_coef))
-        cost += np_sum(np_multiply(Or_t, c_slow)) + np_sum(np_multiply(Oe_t, c_fast))
+        cost += np_sum(np_multiply(I_t, hold_coef)) + np_sum(np_multiply(D_backlog, penalty_coef)) + np_sum(np_multiply(Or_t, c_slow)) + np_sum(np_multiply(Oe_t, c_fast))
 
-    # ================= [5] 反向传播循环 (BPTT) =================
     d_Sr, d_Se = zeros_like(I_Sr), zeros_like(I_Se)
     d_It, d_Dback = hold_coef + zero, penalty_coef + zero
     d_IPr, d_IPe = zeros_like(I_Sr), zeros_like(I_Se)
@@ -1459,6 +1463,7 @@ def _simulate_and_bp_parallel(args):
         else:
             d_Sr += (d_Yt + d_IPr)
             d_Se += (d_Yt + d_IPe)
+    d_Se = d_Se * raw_material_node
 
     return cost, d_Sr, d_Se
 

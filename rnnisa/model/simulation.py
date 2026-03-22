@@ -245,7 +245,7 @@ def _simulate_and_bp_parallel(args):
         d_Or_d_IPr_stack[t].insert(0, diags((flag_r)[0]))
 
         for _ in range(stage_num - 1):
-            temp_internal_D = (Or_t + Oe_t).dot(B)
+            temp_internal_D = (Or_t + Oe_t) * B
             Oe_t = maximum(zero, I_Se - (I_Pe - temp_internal_D)) * raw_material_node
             flag_e = where(I_Se - (I_Pe - temp_internal_D) > 0, one_minus, zero) * raw_material_node
             d_Oe_d_IPe_stack[t].insert(0, diags((flag_e)[0]))
@@ -254,12 +254,11 @@ def _simulate_and_bp_parallel(args):
             flag_r = where(I_Sr - (I_Pr - temp_internal_D + Oe_t) > 0, one_minus, zero)
             d_Or_d_IPr_stack[t].insert(0, diags((flag_r)[0]))
 
-        # ç¡®ä¿æ—¶é—´ç´¢å¼•ä¸è¶…å‡º Pr æ•°ç»„èŒƒå›´
         valid_t = np.minimum(t + delta_lt, duration)
         Pr[valid_t, range(nodes_num)] = Or_t[0, :]
 
         total_O_t = Or_t + Oe_t
-        internal_D_t = total_O_t.dot(B)
+        internal_D_t = total_O_t * B
         I_Pr = I_Pr + total_O_t - internal_D_t
         I_Pe = I_Pe + Oe_t - internal_D_t
 
@@ -272,13 +271,13 @@ def _simulate_and_bp_parallel(args):
         purchase_order_e = Oe_t * raw_material_node
         purchase_order_r = Or_t * raw_material_node
         mau_o = Oe_t + Or_t - purchase_order_e - purchase_order_r + M_backlog
-        idx_purch = nonzero(raw_material_node)[1] 
-        idx_mau = nonzero(mau_o)[1]
+        idx_purch = nonzero((Oe_t+Or_t) * raw_material_node)[1] 
+        idx_mau = nonzero(mau_o * (one -raw_material_node))[1]
 
         P[ts_fast[t, idx_purch], idx_purch] += purchase_order_e[0, idx_purch]
         P[ts_slow[t, idx_purch], idx_purch] += purchase_order_r[0, idx_purch]
 
-        res_needed = mau_o.dot(B)
+        res_needed = mau_o * B
         temp_rate = I_t / res_needed
         temp_rate[res_needed == 0] = one
         res_rate = minimum(one, temp_rate)
@@ -300,7 +299,7 @@ def _simulate_and_bp_parallel(args):
         d_M_d_man_o[t][0, idx_mau] = min_rate
 
         P[ts_slow[t, idx_mau], idx_mau] += M_actual[0, idx_mau]
-        I_t = I_t - M_actual.dot(B)
+        I_t = I_t - M_actual * B 
         M_backlog = mau_o - M_actual
 
         cost += np_sum(np_multiply(I_t, hold_coef)) + np_sum(np_multiply(D_backlog, penalty_coef)) + np_sum(np_multiply(Or_t, c_slow)) + np_sum(np_multiply(Oe_t, c_fast))
@@ -312,11 +311,11 @@ def _simulate_and_bp_parallel(args):
     d_Or = np.zeros((duration, 1, nodes_num), dtype=data_type)
     d_Oe = np.zeros((duration, 1, nodes_num), dtype=data_type)
 
-    d_Pr_buf = np.zeros_like(Pr)
-    d_P_buf = np.zeros_like(P)
+    d_Pr_buf = np.zeros_like(d_Or)
+    d_P_buf = np.zeros_like(d_Or)
 
     for t in range(duration - 1, -1, -1):
-        d_Mact = - d_It.dot(B_T) 
+        d_Mact = - d_It * B_T
         d_Mq = d_Mact - d_Mt_backlog + d_P_buf[t]
         d_mau_o = d_Mt_backlog + np_multiply(d_Mq, d_M_d_man_o[t])
         d_res_r = zeros_like(I_Sr)
@@ -324,35 +323,35 @@ def _simulate_and_bp_parallel(args):
             val, cols = d_M_d_r_r[t][idx]
             d_res_r[0, cols] += val * d_Mq[0, idx]
             
-        d_It = d_It + d_res_r.dot(d_r_r_d_I[t])
-        d_res_n = d_res_r.dot(d_r_r_d_r_n[t])
-        d_mau_o = d_mau_o + d_res_n.dot(B_T)
-        d_Or[t] += d_mau_o.dot(mau_item_diag) + c_slow * raw_material_node
+        d_It = d_It + d_res_r * d_r_r_d_I[t]
+        d_res_n = d_res_r * d_r_r_d_r_n[t]
+        d_mau_o = d_mau_o + d_res_n * B_T
+        d_Or[t] += d_mau_o * mau_item_diag + c_slow * raw_material_node
         d_Oe[t] += c_fast * raw_material_node
-        d_Yt = d_It.dot(d_It_d_Yt[t]) + d_Dback.dot(d_Dback_d_Yt[t])
-        d_Or[t] += d_IPr.dot(E_B_T) - d_IPe.dot(B_T)
-        d_Oe[t] = (d_Oe[t] + (d_IPr + d_IPe).dot(E_B_T)) * raw_material_node
+        d_Yt = d_It * d_It_d_Yt[t] + d_Dback * d_Dback_d_Yt[t]
+        d_Or[t] += d_IPr * E_B_T - d_IPe * B_T
+        d_Oe[t] = (d_Oe[t] + (d_IPr + d_IPe) * E_B_T) * raw_material_node
 
         d_temp_Or = d_Or[t] + zero
         d_temp_Oe = d_Oe[t] + zero
         
         for i in range(stage_num - 1):
-            d_t_IPr = d_temp_Or.dot(d_Or_d_IPr_stack[t][i])
+            d_t_IPr = d_temp_Or * d_Or_d_IPr_stack[t][i]
             d_Sr -= d_t_IPr
             d_IPr += d_t_IPr
             d_temp_Oe += d_t_IPr 
-            d_t_IPe = d_temp_Oe.dot(d_Oe_d_IPe_stack[t][i]) * raw_material_node
+            d_t_IPe = d_temp_Oe * d_Oe_d_IPe_stack[t][i] * raw_material_node
             d_Se -= d_t_IPe
             d_IPe += d_t_IPe
-            d_temp_Or = - (d_t_IPr + d_t_IPe).dot(B_T)
+            d_temp_Or = - (d_t_IPr + d_t_IPe) * B_T
             d_temp_Oe = d_temp_Or * raw_material_node
 
-        temp_d_IPr = d_temp_Or.dot(d_Or_d_IPr_stack[t][stage_num - 1])
+        temp_d_IPr = d_temp_Or * d_Or_d_IPr_stack[t][stage_num - 1]
         d_Sr -= temp_d_IPr
         d_IPr += temp_d_IPr
         d_temp_Oe += temp_d_IPr 
 
-        temp_d_IPe = d_temp_Oe.dot(d_Oe_d_IPe_stack[t][stage_num - 1])
+        temp_d_IPe = d_temp_Oe *d_Oe_d_IPe_stack[t][stage_num - 1]
         d_Se -= temp_d_IPe
         d_IPe += temp_d_IPe
 
@@ -428,20 +427,18 @@ def _simulate_only_parallel(args):
         I_Pe = I_Pe + Pr[t, :]
 
         Oe_t = maximum(zero, I_Se - I_Pe) * raw_material_node
-        flag_e = where(I_Se - I_Pe > 0, one_minus, zero) * raw_material_node
-        
         Or_t = maximum(zero, I_Sr - (I_Pr + Oe_t))
-        flag_r = where(I_Sr - (I_Pr + Oe_t) > 0, one_minus, zero)
 
         for _ in range(stage_num - 1):
-            temp_internal_D = (Or_t + Oe_t).dot(B)
+            temp_internal_D = (Or_t + Oe_t) *B
             Oe_t = maximum(zero, I_Se - (I_Pe - temp_internal_D)) * raw_material_node
             Or_t = maximum(zero, I_Sr - (I_Pr - temp_internal_D + Oe_t))
 
-        Pr[t + delta_lt, range(nodes_num)] = Or_t[0, :]
+        valid_t = np.minimum(t + delta_lt, duration)
+        Pr[valid_t, range(nodes_num)] = Or_t[0, :]
 
         total_O_t = Or_t + Oe_t
-        internal_D_t = total_O_t.dot(B)
+        internal_D_t = total_O_t * B
         I_Pr = I_Pr + total_O_t - internal_D_t
         I_Pe = I_Pe + Oe_t - internal_D_t
 
@@ -452,13 +449,13 @@ def _simulate_only_parallel(args):
         purchase_order_e = Oe_t * raw_material_node
         purchase_order_r = Or_t * raw_material_node
         mau_o = Oe_t + Or_t - purchase_order_e - purchase_order_r + M_backlog
-        idx_purch = nonzero(raw_material_node)[1] 
-        idx_mau = nonzero(mau_o)[1]
+        idx_purch = nonzero((Oe_t+Or_t) * raw_material_node)[1] 
+        idx_mau = nonzero(mau_o * (one -raw_material_node))[1]
 
         P[ts_fast[t, idx_purch], idx_purch] += purchase_order_e[0, idx_purch]
         P[ts_slow[t, idx_purch], idx_purch] += purchase_order_r[0, idx_purch]
 
-        res_needed = mau_o.dot(B)
+        res_needed = mau_o * B
         temp_rate = I_t / res_needed
         temp_rate[res_needed == 0] = one
         res_rate = minimum(one, temp_rate)
@@ -468,7 +465,7 @@ def _simulate_only_parallel(args):
         M_actual[0, idx_mau] = min_rate * mau_o[0, idx_mau]
 
         P[ts_slow[t, idx_mau], idx_mau] += M_actual[0, idx_mau]
-        I_t = I_t - M_actual.dot(B)
+        I_t = I_t - M_actual * B 
         M_backlog = mau_o - M_actual
 
         cost += np_sum(np_multiply(I_t, hold_coef)) + np_sum(np_multiply(D_backlog, penalty_coef)) + np_sum(np_multiply(Or_t, c_slow)) + np_sum(np_multiply(Oe_t, c_fast))

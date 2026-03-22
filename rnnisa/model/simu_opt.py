@@ -204,6 +204,8 @@ class SimOpt():
 
     def two_stage_procedure(self, I_Sr_0,I_Se_0, selected_location=None):
         t_s = time()
+        print('Initial regular Point: ', I_Sr_0)
+        print('Initial emergency Point: ', I_Se_0)
         I_Sr_1, I_Se_1, _ = self.FISTA(I_Sr_0=I_Sr_0, I_Se_0=I_Se_0*self.__raw_nodes, selected_location=selected_location)
         selected_location = np.where(np.abs(I_Sr_1) <= 0, 0, 1)  # np.where(I_S >= 1, 1, 0)
         I_Sr_2,I_Se_2 = self.SGD(I_Sr_0=I_Sr_1,I_Se_0=I_Se_1*self.__raw_nodes, selected_location=selected_location)

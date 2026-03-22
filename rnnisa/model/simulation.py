@@ -254,7 +254,9 @@ def _simulate_and_bp_parallel(args):
             flag_r = where(I_Sr - (I_Pr - temp_internal_D + Oe_t) > 0, one_minus, zero)
             d_Or_d_IPr_stack[t].insert(0, diags((flag_r)[0]))
 
-        Pr[t + delta_lt, range(nodes_num)] = Or_t[0, :]
+        # ç¡®ä¿æ—¶é—´ç´¢å¼•ä¸è¶…å‡º Pr æ•°ç»„èŒƒå›´
+        valid_t = np.minimum(t + delta_lt, duration)
+        Pr[valid_t, range(nodes_num)] = Or_t[0, :]
 
         total_O_t = Or_t + Oe_t
         internal_D_t = total_O_t.dot(B)
@@ -360,16 +362,28 @@ def _simulate_and_bp_parallel(args):
             d_Dback = -d_Yt + penalty_coef
             
             idx_slow = nonzero(P[t])[0]
-            d_Or[t - lt_slow[idx_slow], 0, idx_slow] += d_Yt[0, idx_slow]
+            valid_slow_idx = idx_slow[t - lt_slow[idx_slow] >= 0]
+            if len(valid_slow_idx) > 0:
+                valid_slow_t = t - lt_slow[valid_slow_idx]
+                d_Or[valid_slow_t, 0, valid_slow_idx] += d_Yt[0, valid_slow_idx]
 
             idx_fast = nonzero(P[t] * raw_material_node[0])[0]
-            d_Oe[t - lt_fast[idx_fast], 0, idx_fast] += d_Yt[0, idx_fast]
+            valid_fast_idx = idx_fast[t - lt_fast[idx_fast] >= 0]
+            if len(valid_fast_idx) > 0:
+                valid_fast_t = t - lt_fast[valid_fast_idx]
+                d_Oe[valid_fast_t, 0, valid_fast_idx] += d_Yt[0, valid_fast_idx]
 
             idx_m = nonzero(P[t] * mau_item_diag.diagonal())[0]
-            d_P_buf[t - lt_slow[idx_m], 0, idx_m] += d_Yt[0, idx_m]
+            valid_m_idx = idx_m[t - lt_slow[idx_m] >= 0]
+            if len(valid_m_idx) > 0:
+                valid_m_t = t - lt_slow[valid_m_idx]
+                d_P_buf[valid_m_t, 0, valid_m_idx] += d_Yt[0, valid_m_idx]
 
             idx_pr = nonzero((Pr[t] * raw_material_node[0]> 0))[0]
-            d_Pr_buf[t - delta_lt[idx_pr], 0, idx_pr] += d_IPe[0, idx_pr]
+            valid_pr_idx = idx_pr[t - delta_lt[idx_pr] >= 0]
+            if len(valid_pr_idx) > 0:
+                valid_pr_t = t - delta_lt[valid_pr_idx]
+                d_Pr_buf[valid_pr_t, 0, valid_pr_idx] += d_IPe[0, valid_pr_idx]
         else:
             d_Sr += (d_Yt + d_IPr)
             d_Se += (d_Yt + d_IPe)

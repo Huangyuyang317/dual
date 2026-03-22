@@ -40,9 +40,9 @@ def run_rnn_spanning_tree_optimization(data_type, temp_path, nodes_num):
     I_S0_K_dict={10:10}
 
     sim = simulation.Simulation(data_type=data_type, duration=100, data_path=temp_path,
-                                network_name=network_name_dict[nodes_num],  # test_bom_spanning_tree50000.pkl
+                                network_name=network_name_dict[nodes_num],  
                                 delivery_cycle=delivery_cycle_pkl_dict[nodes_num],
-                                penalty_factor=2.0)  # "temp_delivery_cycle-10000-20210423.pkl"
+                                penalty_factor=2.0)
     opt = simu_opt.SimOpt(data_path=temp_path, rep_num=10, step_size=step_size_dict[nodes_num],
                           regula_para=regula_para_dict[nodes_num],
                           stop_thresh=stop_thresh_dict[nodes_num], positive_flag=True, cost_f=sim.evaluate_cost,
@@ -55,6 +55,6 @@ def run_rnn_spanning_tree_optimization(data_type, temp_path, nodes_num):
 if __name__ == "__main__":
     data_path = "./data"
     data_type = np.float64
-    nodes_num_list = [10]  # 可以根据需要添加更多节点数量，如[10, 10000, 50000]
+    nodes_num_list = [10]
     for n in nodes_num_list:
         run_rnn_spanning_tree_optimization(data_type, data_path, n)

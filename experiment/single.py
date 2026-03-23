@@ -43,7 +43,7 @@ def run_rnn_spanning_tree_optimization(data_type, temp_path, nodes_num):
     sim = simulation.Simulation(data_type=data_type, duration=100, data_path=temp_path,
                                 network_name=network_name_dict[nodes_num],  
                                 delivery_cycle=delivery_cycle_pkl_dict[nodes_num],
-                                penalty_factor=2)
+                                penalty_factor=20)
     opt = simu_opt.SimOpt(data_path=temp_path, rep_num=10, step_size=step_size_dict[nodes_num],
                           regula_para=regula_para_dict[nodes_num],
                           stop_thresh=stop_thresh_dict[nodes_num], positive_flag=True, cost_f=sim.evaluate_cost,

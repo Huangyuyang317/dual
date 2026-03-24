@@ -29,13 +29,13 @@ def run_gradient_check():
 
     # --- 2. 设定测试点 (Sr, Se) ---
     I_Sr = 10.0 * np.ones((1, nodes_num), dtype=data_type)
-    I_Se = 5.0 * np.ones((1, nodes_num), dtype=data_type)
-    I_Se = I_Se * sim.get_raw_nodes() # 只有原材料节点 Se 非 0
+    I_Se = 10.0 * np.ones((1, nodes_num), dtype=data_type)
+    I_Se = I_Se * sim.get_raw_nodes()
 
     print(f"\n{'='*20} 梯度一致性校验 {'='*20}")
     
-    # 连续测试 3 次不同的随机种子
-    for i in range(10):
+    # 连续测试 10 次不同的随机种子
+    for i in range(1):
         test_seed = 2026 + i
         print(f"\n[轮次 {i+1}] 测试随机种子: {test_seed}")
 

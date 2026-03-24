@@ -178,6 +178,30 @@ class Simulation():
                                   keepdims=True)
         return cost_result, grad_result_r, grad_result_e
 
+    # def evaluate_cost_gradient(self, I_Sr, I_Se, eval_num=30, mean_flag=True):
+    #         process_num = min(CORE_NUM, eval_num)
+    #         I_S_list = [(I_Sr, I_Se, self.__duration, self.__nodes_num, self.__zero, self.__one, self.__one_minus, self.__stage_num,
+    #             self.__data_type, self.__B_indices_list,
+    #             self.__hold_coef, self.__penalty_coef, self.__c_slow, self.__c_fast, self.__raw_material_node,
+    #             self.__B, self.__ts_slow, self.__ts_fast, self.__delta_lt, 
+    #             self.__D_mean, self.__std, self.__demand_set, self.__delivery_shift, i + self.__seed_num) 
+    #             for i in range(eval_num)]
+    #         self.__seed_num += eval_num
+    #         with Pool(process_num) as pool:
+    #             result = pool.map(_simulate_and_bp_tf, I_S_list)
+                
+    #         result = list(zip(*result))
+    #         cost_result = np.array(result[0])
+    #         grad_result_r = np.squeeze(result[1])
+    #         grad_result_e = np.squeeze(result[2])
+    #         if mean_flag:
+    #             cost_result = np.mean(cost_result)
+    #             grad_result_r = np.mean(grad_result_r, axis=0,
+    #                                 keepdims=True)
+    #             grad_result_e = np.mean(grad_result_e, axis=0,
+    #                                 keepdims=True)
+    #         return cost_result, grad_result_r, grad_result_e
+
     def get_standard_args(self, I_Sr, I_Se, seed_val):
             return [(I_Sr, I_Se, self.__duration, self.__nodes_num, self.__zero, self.__one, self.__one_minus, self.__stage_num,
              self.__lt_slow, self.__lt_fast, self.__data_type, self.__B_indices_list, self.__equal_tole,
@@ -211,7 +235,7 @@ def _simulate_and_bp_parallel(args):
      hold_coef, penalty_coef, c_slow, c_fast, mau_item_diag, raw_material_node,
      B, B_T, E_B_T, ts_slow, ts_fast, delta_lt, 
      D_mean, std, demand_set, delivery_shift, rand_seed) = args
-
+    print('!!!',raw_material_node)
     maximum = np.maximum
     minimum = np.minimum
     where = np.where
@@ -229,9 +253,9 @@ def _simulate_and_bp_parallel(args):
     P = np.zeros((duration + 1, nodes_num), dtype=data_type)
     Pr = np.zeros((duration + 1, nodes_num), dtype=data_type)
     D_backlog = zeros_like(M_backlog)
-    I_t = I_Sr + zero
-    I_Pr = I_Sr + zero
-    I_Pe = I_Se + zero
+    I_t = np.full_like(I_Sr, 4.0)
+    I_Pr = np.full_like(I_Sr, 4.0)
+    I_Pe = np.full_like(I_Sr, 4.0)
     cost = zero
     
     d_It_d_Yt, d_Dback_d_Yt = [], []
@@ -364,7 +388,6 @@ def _simulate_and_bp_parallel(args):
         temp_d_IPe = d_temp_Oe *d_Oe_d_IPe_stack[t][stage_num - 1]
         d_Se -= temp_d_IPe
         d_IPe += temp_d_IPe
-
         if t > 0:
             d_Mt_backlog = d_mau_o + zero
             d_It = d_Yt + hold_coef
@@ -392,7 +415,7 @@ def _simulate_and_bp_parallel(args):
             valid_pr_idx = idx_pr[t - delta_lt[idx_pr] >= 0]
             if len(valid_pr_idx) > 0:
                 valid_pr_t = t - delta_lt[valid_pr_idx]
-                d_Pr_buf[valid_pr_t, 0, valid_pr_idx] += d_IPe[0, valid_pr_idx]
+                d_Or[valid_pr_t, 0, valid_pr_idx] += d_IPe[0, valid_pr_idx]
         else:
             d_Sr += (d_Yt + d_IPr)
             d_Se += (d_IPe)
@@ -425,9 +448,9 @@ def _simulate_only_parallel(args):
     P = np.zeros((duration + 1, nodes_num), dtype=data_type)
     Pr = np.zeros((duration + 1, nodes_num), dtype=data_type)
     D_backlog = zeros_like(M_backlog)
-    I_t = I_Sr + zero
-    I_Pr = I_Sr + zero
-    I_Pe = I_Se + zero
+    I_t = np.full_like(I_Sr, 4.0)
+    I_Pr = np.full_like(I_Sr, 4.0)
+    I_Pe = np.full_like(I_Sr, 4.0)
     cost = zero
     
 
@@ -525,9 +548,10 @@ def _simulate_and_bp_tf(args):
         Pr = tf.zeros((duration + 1, nodes_num), dtype=tf.float32)
         
         D_backlog = tf.zeros((1, nodes_num), dtype=tf.float32)
-        I_t = tf_I_Sr + 0.0
-        I_Pr = tf_I_Sr + 0.0
-        I_Pe = tf_I_Se + 0.0
+        init_val = 4.0
+        I_t = tf.fill(tf.shape(tf_I_Sr), init_val)
+        I_Pr = tf.fill(tf.shape(tf_I_Sr), init_val)
+        I_Pe = tf.fill(tf.shape(tf_I_Se), init_val)
         total_cost = tf.constant(0.0, dtype=tf.float32)
 
         for t in range(duration):

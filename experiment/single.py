@@ -38,7 +38,7 @@ def run_rnn_spanning_tree_optimization(data_type, temp_path, nodes_num):
     stop_thresh_ratio_dict={1:0.74}
     step_size_ratio_dict={1:0.09}
     step_bound_dict={1:None}
-    I_S0_K_dict={1:1}
+    I_S0_K_dict={1:3}
 
     sim = simulation.Simulation(data_type=data_type, duration=100, data_path=temp_path,
                                 network_name=network_name_dict[nodes_num],  

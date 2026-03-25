@@ -45,11 +45,11 @@ def run_gradient_check():
         # --- A. 调用你的算法 (手动 BP/IPA) ---
         # 直接调用底层的并行函数（单进程运行方便打印）
         from rnnisa.model.simulation import _simulate_and_bp_parallel
-        cost_custom, grad_r_custom, grad_e_custom = _simulate_and_bp_parallel(args[0])
+        cost_custom, grad_r_custom, grad_e_custom = _simulate_and_bp_parallel(args)
 
         # --- B. 调用 TensorFlow 自动微分 ---
         from rnnisa.model.simulation import _simulate_and_bp_tf
-        cost_tf, grad_r_tf, grad_e_tf = _simulate_and_bp_tf(args[1])
+        cost_tf, grad_r_tf, grad_e_tf = _simulate_and_bp_tf(args)
 
         # --- 3. 结果对比分析 ---
         cost_diff = abs(cost_custom - cost_tf)

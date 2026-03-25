@@ -203,16 +203,11 @@ class Simulation():
     #         return cost_result, grad_result_r, grad_result_e
 
     def get_standard_args(self, I_Sr, I_Se, seed_val):
-            return [(I_Sr, I_Se, self.__duration, self.__nodes_num, self.__zero, self.__one, self.__one_minus, self.__stage_num,
+            return (I_Sr, I_Se, self.__duration, self.__nodes_num, self.__zero, self.__one, self.__one_minus, self.__stage_num,
              self.__lt_slow, self.__lt_fast, self.__data_type, self.__B_indices_list, self.__equal_tole,
              self.__hold_coef, self.__penalty_coef, self.__c_slow, self.__c_fast, self.__mau_item_diag, self.__raw_material_node,
              self.__B, self.__B_T, self.__E_B_T, self.__ts_slow, self.__ts_fast, self.__delta_lt, 
-             self.__D_mean, self.__std, self.__demand_set, self.__delivery_shift, seed_val),
-                    (I_Sr, I_Se, self.__duration, self.__nodes_num, self.__zero, self.__one, self.__one_minus, self.__stage_num,
-             self.__data_type, self.__B_indices_list,
-             self.__hold_coef, self.__penalty_coef, self.__c_slow, self.__c_fast, self.__raw_material_node,
-             self.__B, self.__ts_slow, self.__ts_fast, self.__delta_lt, 
-             self.__D_mean, self.__std, self.__demand_set, self.__delivery_shift, seed_val)] 
+             self.__D_mean, self.__std, self.__demand_set, self.__delivery_shift, seed_val)
 
 def _generate_random_demand_parallel(duration, nodes_num, data_type, D_mean, std, demand_set, delivery_shift,
                                      zero, rand_seed):
@@ -504,142 +499,91 @@ def _simulate_only_parallel(args):
         cost += np_sum(np_multiply(I_t, hold_coef)) + np_sum(np_multiply(D_backlog, penalty_coef)) + np_sum(np_multiply(Or_t, c_slow)) + np_sum(np_multiply(Oe_t, c_fast))
     return cost
 
-
 def _simulate_and_bp_tf(args):
     import tensorflow as tf
-    import numpy as np
-    # 1. 解包参数
-    (I_Sr_np, I_Se_np, duration, nodes_num, zero_np, one_np, one_minus_np, stage_num,
-     data_type, B_indices_list,
-     hold_coef_np, penalty_coef_np, c_slow_np, c_fast_np, raw_material_node_np,
-     B_np, ts_slow, ts_fast, delta_lt, 
+    (I_Sr, I_Se, duration, nodes_num, zero, one, one_minus, stage_num,
+     lt_slow, lt_fast, data_type, B_indices_list, equal_tolerance,
+     hold_coef, penalty_coef, c_slow, c_fast, mau_item_diag, raw_material_node,
+     B, B_T, E_B_T, ts_slow, ts_fast, delta_lt, 
      D_mean, std, demand_set, delivery_shift, rand_seed) = args
+    one_small = np.int8(1)
+    vector_shape = [1, nodes_num]
+    tf_maximum = tf.maximum
+    tf_minimum = tf.minimum
+    reduce_sum = tf.reduce_sum
+    where = tf.where
+    reduce_min = tf.reduce_min
+    gather_nd = tf.gather_nd
+    update = tf.tensor_scatter_nd_update
+    scatter_nd = tf.scatter_nd
 
-    # 2. 转换为 TensorFlow 张量
-    # 决策变量需要设为 tf.Variable 或在 GradientTape 中 watch
-    tf_I_Sr = tf.Variable(I_Sr_np, dtype=tf.float32)
-    tf_I_Se = tf.Variable(I_Se_np, dtype=tf.float32)
     
-    tf_B = tf.convert_to_tensor(B_np.toarray(), dtype=tf.float32) # 稠密矩阵便于TF计算
-    tf_raw_mask = tf.convert_to_tensor(raw_material_node_np, dtype=tf.float32)
-    tf_hold = tf.convert_to_tensor(hold_coef_np, dtype=tf.float32)
-    tf_penalty = tf.convert_to_tensor(penalty_coef_np, dtype=tf.float32)
-    tf_c_slow = tf.convert_to_tensor(c_slow_np, dtype=tf.float32)
-    tf_c_fast = tf.convert_to_tensor(c_fast_np, dtype=tf.float32)
-    
-    # 3. 生成随机需求 (使用 TF 的随机生成以保持一致性)
-    if rand_seed is not None:
-        tf.random.set_seed(rand_seed)
-        np.random.seed(rand_seed)
-
-    # 预生成需求 (为了性能，需求通常不参与梯度追踪)
-    D_raw, D_order_raw = _generate_random_demand_parallel(
+    D, D_order = _generate_random_demand_parallel(
         duration, nodes_num, np.float32, D_mean, std, demand_set, delivery_shift, 0.0, rand_seed
     )
-    tf_D = tf.convert_to_tensor(D_raw, dtype=tf.float32)
-    tf_D_order = tf.convert_to_tensor(D_order_raw, dtype=tf.float32)
+    P_values = np.zeros((duration + 1, duration, nodes_num), dtype=np.int8)
+    cost = zero
 
-    # 4. 开启梯度带
-    with tf.GradientTape() as tape:
-        # 初始化状态
-        M_backlog = tf.zeros((1, nodes_num), dtype=tf.float32)
-        # P 和 Pr 因为要在循环中通过索引更新，使用 tf.TensorArray 或 动态 Tensor 构建
-        P = tf.zeros((duration + 1, nodes_num), dtype=tf.float32)
-        Pr = tf.zeros((duration + 1, nodes_num), dtype=tf.float32)
-        
-        D_backlog = tf.zeros((1, nodes_num), dtype=tf.float32)
-        init_val = 4.0
-        I_t = tf.fill(tf.shape(tf_I_Sr), init_val)
-        I_Pr = tf.fill(tf.shape(tf_I_Sr), init_val)
-        I_Pe = tf.fill(tf.shape(tf_I_Se), init_val)
-        total_cost = tf.constant(0.0, dtype=tf.float32)
+    gpu_devices = tf.config.list_physical_devices('GPU')
+    GPU_flag = len(gpu_devices) > 0
+    if GPU_flag:
+        os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+        physical_devices = tf.config.list_physical_devices('GPU')
+        for device_gpu in physical_devices:
+            tf.config.experimental.set_memory_growth(device_gpu, True)
+    else:
+        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+        tf.config.experimental.set_synchronous_execution(enable=False)
+    temp_B = B.tocoo()
+    indices = np.mat([temp_B.row, temp_B.col]).transpose()
+    idx_mau = np.nonzero(1 - raw_material_node)[1]
+    tf_B = tf.SparseTensor(indices, temp_B.data, temp_B.shape)
+    tf_B_sparse_split = tf.sparse.split(sp_input=tf_B, num_split=nodes_num, axis=0)
+    tf_B_indices_list = {i: tf_B_sparse_split[i].indices for i in idx_mau}
+    tf_B = tf.sparse.reorder(tf_B)
 
+    tf_matmul = tf.sparse.sparse_dense_matmul
+    tf_I_Sr = tf.constant(I_Sr, dtype=tf.float32)
+    tf_I_Se = tf.constant(I_Se, dtype=tf.float32)
+    M_backlog = tf.zeros(vector_shape, dtype=tf.float32)
+    D_backlog = tf.zeros_like(M_backlog)
+    P_history = tf.zeros([duration, nodes_num], dtype=tf.float32)
+
+    with tf.GradientTape(watch_accessed_variables=False) as tape:
+        tape.watch((tf_I_Sr, tf_I_Se))
+        I_t = tf_I_Sr + zero
+        I_Pr = tf_I_Sr + zero
+        I_Pe = tf_I_Sr + zero
         for t in range(duration):
-            # A. 更新库存位置
-            I_Pr = I_Pr - tf_D_order[t:t+1, :]
-            I_Pe = I_Pe - tf_D_order[t:t+1, :]
-            I_Pe = I_Pe + Pr[t:t+1, :]
+            I_Pr = I_Pr - D_order[t, :]
+            I_Pe = I_Pe - D_order[t, :]
+            I_Pe = I_Pe + Pr[t, :]
+            Oe_t = tf_maximum(zero, I_Se - I_Pe) * raw_material_node
+            Or_t = tf_maximum(zero, I_Sr - (I_Pr + Oe_t))
+        for _ in range(stage_num - 1):
+            temp_internal_D = tf_matmul((Or_t + Oe_t), tf_B)
+            Oe_t = tf_maximum(zero, I_Se - (I_Pe - temp_internal_D)) * raw_material_node
+            Or_t = tf_maximum(zero, I_Sr - (I_Pr - temp_internal_D + Oe_t))
 
-            # B. DIP 下单决策 (使用 tf.maximum 保证可微)
-            Oe_t = tf.maximum(0.0, tf_I_Se - I_Pe) * tf_raw_mask
-            Or_t = tf.maximum(0.0, tf_I_Sr - (I_Pr + Oe_t))
+        total_O_t = Or_t + Oe_t
+        internal_D_t = tf_matmul(total_O_t, tf_B)
+        I_Pr = I_Pr + total_O_t - internal_D_t
+        I_Pe = I_Pe + Oe_t - internal_D_t
+        temp_I_val = I_t - D_backlog - D[t] + reduce_sum(P_values[t] * P_history, axis=0) 
+        I_t = tf_maximum(zero, temp_I_val)
+        D_backlog = -tf_minimum(zero, temp_I_val)
+        purchase_order_e = Oe_t * raw_material_node
+        purchase_order_r = Or_t * raw_material_node
+        mau_o = Oe_t + Or_t - purchase_order_e - purchase_order_r + M_backlog
+        with tape.stop_recording():
+            idx_purch = where((purchase_order_e + purchase_order_r) > 0)[:, 1].numpy()
+            idx_mau = where(mau_o > 0).numpy()  
+        res_needed = tf_matmul(mau_o, tf_B)
+        res_needed = tf_maximum(equal_tolerance, res_needed)
+        res_rate = I_t / res_needed
+        res_rate = tf_minimum(one, res_rate)
 
-            # 多层 BOM 级联
-            for _ in range(stage_num - 1):
-                temp_internal_D = tf.matmul(Or_t + Oe_t, tf_B, transpose_b=True) # 修正：需求传导
-                Oe_t = tf.maximum(0.0, tf_I_Se - (I_Pe - temp_internal_D)) * tf_raw_mask
-                Or_t = tf.maximum(0.0, tf_I_Sr - (I_Pr - temp_internal_D + Oe_t))
-
-            # C. 传送带更新 (Pr)
-            valid_t_pr = min(t + delta_lt[0], duration) # 简化：假设 delta_lt 均匀或取平均
-            # TF 中更新 Tensor 需要特殊处理：使用 scatter 或重建
-            # 此处演示为了直观使用简单的拼接思路（大规模时建议用 TensorArray）
-            indices_pr = tf.reshape(tf.cast(tf.minimum(t + delta_lt, duration), tf.int32), [-1, 1])
-            nodes_idx = tf.reshape(tf.range(nodes_num), [-1, 1])
-            update_indices_pr = tf.concat([indices_pr, nodes_idx], axis=1)
-            Pr = tf.tensor_scatter_nd_update(Pr, update_indices_pr, Or_t[0])
-
-            # D. 库存状态更新
-            total_O_t = Or_t + Oe_t
-            internal_D_t = tf.matmul(total_O_t, tf_B, transpose_b=True)
-            I_Pr = I_Pr + total_O_t - internal_D_t
-            I_Pe = I_Pe + Oe_t - internal_D_t
-
-            temp_I_val = I_t - D_backlog - tf_D[t:t+1, :] + P[t:t+1, :]
-            I_t = tf.maximum(0.0, temp_I_val)
-            D_backlog = -tf.minimum(0.0, temp_I_val)
-
-            # E. 分配逻辑 (关键：min_rate 的可微处理)
-            purchase_e = Oe_t * tf_raw_mask
-            purchase_r = Or_t * tf_raw_mask
-            mau_o = (Oe_t + Or_t) * (1.0 - tf_raw_mask) + M_backlog
-            
-            # 更新 P (原材料)
-            # 注意：ts_fast[t] 是 indices
-            idx_p = tf.reshape(tf.cast(ts_fast[t], tf.int32), [-1, 1])
-            update_idx_p = tf.concat([idx_p, nodes_idx], axis=1)
-            P = tf.tensor_scatter_nd_add(P, update_idx_p, purchase_e[0])
-            
-            idx_s = tf.reshape(tf.cast(ts_slow[t], tf.int32), [-1, 1])
-            update_idx_s = tf.concat([idx_s, nodes_idx], axis=1)
-            P = tf.tensor_scatter_nd_add(P, update_idx_s, purchase_r[0])
-
-            # 计算满足率
-            res_needed = tf.matmul(mau_o, tf_B, transpose_b=True)
-            res_rate = tf.minimum(1.0, I_t / tf.maximum(1e-9, res_needed))
-
-            # 计算制造产出
-            M_actual_list = []
-            for idx in range(nodes_num):
-                if not raw_material_node_np[0, idx]: # 制造件
-                    upstream_indices = B_indices_list[idx]
-                    # 使用 tf.reduce_min 保持梯度流
-                    if len(upstream_indices) > 0:
-                        m_rate = tf.reduce_min(tf.gather(res_rate[0], upstream_indices))
-                    else:
-                        m_rate = 1.0
-                    M_actual_list.append(m_rate * mau_o[0, idx])
-                else:
-                    M_actual_list.append(0.0)
-            
-            M_actual = tf.reshape(tf.stack(M_actual_list), (1, nodes_num))
-
-            # 更新 P (制造件)
-            P = tf.tensor_scatter_nd_add(P, update_idx_s, M_actual[0])
-            
-            I_t = I_t - tf.matmul(M_actual, tf_B, transpose_b=True)
-            M_backlog = mau_o - M_actual
-
-            # F. 计算成本
-            step_cost = (tf.reduce_sum(I_t * tf_hold) + 
-                         tf.reduce_sum(D_backlog * tf_penalty) + 
-                         tf.reduce_sum(Or_t * tf_c_slow) + 
-                         tf.reduce_sum(Oe_t * tf_c_fast))
-            total_cost += step_cost
-
-    grad_Sr, grad_Se = tape.gradient(total_cost, [tf_I_Sr, tf_I_Se])
-    
-    return total_cost.numpy(), grad_Sr.numpy(), grad_Se.numpy()
 
 def _print_cost_grad_info(cost, gradient):
     print('total_cost: ', cost)

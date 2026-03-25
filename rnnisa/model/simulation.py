@@ -551,7 +551,7 @@ def _simulate_and_bp_tf(args):
     P_history = tf.zeros([duration, nodes_num], dtype=tf.float32)
 
     with tf.GradientTape(watch_accessed_variables=False) as tape:
-        tape.watch((tf_I_Sr, tf_I_Se))
+        tape.watch([tf_I_Sr, tf_I_Se]) 
         I_t = tf_I_Sr + zero
         I_Pr = tf_I_Sr + zero
         I_Pe = tf_I_Sr + zero
@@ -583,10 +583,35 @@ def _simulate_and_bp_tf(args):
         res_needed = tf_maximum(equal_tolerance, res_needed)
         res_rate = I_t / res_needed
         res_rate = tf_minimum(one, res_rate)
+        min_rate = scatter_nd(idx_mau, [reduce_min(gather_nd(res_rate,tf_B_indices_list[index])) for index in idx_mau[:, 1]], vector_shape)
+        M_act = min_rate * mau_o
+
+        I_t = I_t - tf_matmul(M_act, tf_B)
+        cost = cost + reduce_sum(I_t * hold_coef) + reduce_sum(
+                    D_backlog * penalty_coef) + reduce_sum(Or_t * c_slow) + reduce_sum(Oe_t * c_fast)
+        gradients = tape.gradient(cost, [tf_I_Sr, tf_I_Se])
+        grad_Sr = gradients[0].numpy() if gradients[0] is not None else np.zeros_like(I_Sr)
+        grad_Se = gradients[1].numpy() if gradients[1] is not None else np.zeros_like(I_Se)
+        cost = cost.numpy()
+        _print_cost_grad_info(cost, np.concatenate([grad_Sr, grad_Se]))
+        return cost, grad_Sr, grad_Se
 
 
-def _print_cost_grad_info(cost, gradient):
+def _print_cost_grad_info(cost, grad_Sr, grad_Se):
+    print('-------------------------------------------')
     print('total_cost: ', cost)
-    delta_S = np.ones_like(gradient)
-    print('gradient of item 666: ', gradient[0, 666])
-    print('cost change: ', np.sum(delta_S * gradient))
+    
+    # 假设节点 666 存在，打印该节点在两个维度上的梯度
+    if grad_Sr.shape[1] > 666:
+        print(f'gradient of item 666 (Sr): {grad_Sr[0, 666]:.6f}')
+        print(f'gradient of item 666 (Se): {grad_Se[0, 666]:.6f}')
+    
+    # 计算预期成本变化（如果所有节点的 Sr 和 Se 都增加 1 个单位）
+    # 这里的 delta_S 相当于假设每个变量都增加 1
+    cost_change_Sr = np.sum(grad_Sr) # 相当于 np.sum(np.ones_like(grad_Sr) * grad_Sr)
+    cost_change_Se = np.sum(grad_Se)
+    
+    print(f'Sr sum grad (total change if all Sr+1): {cost_change_Sr:.4f}')
+    print(f'Se sum grad (total change if all Se+1): {cost_change_Se:.4f}')
+    print(f'Total predicted cost change: {cost_change_Sr + cost_change_Se:.4f}')
+    print('-------------------------------------------')

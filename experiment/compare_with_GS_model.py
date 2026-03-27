@@ -20,7 +20,7 @@ def run_rnn_optimization(data_type, nodes_num, sim, opt, I_S0_K):
 
     I_Se0 = data_type(0) * np.ones((1, nodes_num), dtype=data_type)
     raw_node_indices = np.nonzero(sim.get_raw_nodes()[0])[0]  # 获取值为True/非零的索引
-    I_Se0[0, raw_node_indices] = (I_S0_K//2) * np.ones((1, len(raw_node_indices)), dtype=data_type) 
+    I_Se0[0, raw_node_indices] = (I_S0_K) * np.ones((1, len(raw_node_indices)), dtype=data_type) 
     
     _, _, I_Sr,I_Se = opt.two_stage_procedure(I_Sr0,I_Se0)
     if I_Sr.shape[0] < 20:
@@ -32,19 +32,20 @@ def run_rnn_optimization(data_type, nodes_num, sim, opt, I_S0_K):
 def run_rnn_spanning_tree_optimization(data_type, temp_path, nodes_num):
     network_name_dict={10:"bom_kodak_dual.pkl"}
     delivery_cycle_pkl_dict={10:'delivery_cycle-10nodes-2021-12-17 04-33.pkl'}
-    step_size_dict={10:3.8e-2}
-    regula_para_dict={10:1.2e4}
-    stop_thresh_dict={10:2e-4}
-    stop_thresh_ratio_dict={10:0.7}
-    step_size_ratio_dict={10:0.08}
+    step_size_dict={10:1.5e-1}
+    step_size_e_dict={10:1.5e-2}
+    regula_para_dict={10:1.2e3}
+    stop_thresh_dict={10:1e-3}
+    stop_thresh_ratio_dict={10:1.0}
+    step_size_ratio_dict={10:0.3}
     step_bound_dict={10:None}
-    I_S0_K_dict={10:10}
+    I_S0_K_dict={10:20}
 
     sim = simulation.Simulation(data_type=data_type, duration=100, data_path=temp_path,
                                 network_name=network_name_dict[nodes_num],  
                                 delivery_cycle=delivery_cycle_pkl_dict[nodes_num],
                                 penalty_factor=2.0)
-    opt = simu_opt.SimOpt(data_path=temp_path, rep_num=10, step_size=step_size_dict[nodes_num],
+    opt = simu_opt.SimOpt(data_path=temp_path, rep_num=10, step_size=step_size_dict[nodes_num],step_size_e = step_size_e_dict[nodes_num],
                           regula_para=regula_para_dict[nodes_num],
                           stop_thresh=stop_thresh_dict[nodes_num], positive_flag=True, cost_f=sim.evaluate_cost,
                           grad_f=sim.evaluate_cost_gradient, step_bound=step_bound_dict[nodes_num],

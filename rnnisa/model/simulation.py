@@ -357,7 +357,7 @@ def _simulate_and_bp_parallel(args):
         d_Oe[t] += c_fast * raw_material_node
         d_Yt = d_It * d_It_d_Yt[t] + d_Dback * d_Dback_d_Yt[t]
         d_Or[t] += d_IPr * E_B_T - d_IPe * B_T
-        d_Oe[t] += d_IPr * E_B_T * raw_material_node
+        d_Oe[t] += (d_IPr + d_IPe) * E_B_T * raw_material_node
 
         d_temp_Or = d_Or[t] + zero
         d_temp_Oe = d_Oe[t] + zero
@@ -409,9 +409,6 @@ def _simulate_and_bp_parallel(args):
             if len(valid_pr_idx) > 0:
                 valid_pr_t = t - delta_lt[valid_pr_idx]
                 d_Or[valid_pr_t, 0, valid_pr_idx] += d_IPe[0, valid_pr_idx]
-        else:
-            d_Sr += (d_Yt)
-            d_Se += (d_IPe)
     d_Se = d_Se * raw_material_node
 
     return cost, d_Sr, d_Se

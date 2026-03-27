@@ -14,7 +14,7 @@ from rnnisa.utils.tool_function import print_run_time, my_dump
 
 
 class SimOpt():
-    def __init__(self, data_path, rep_num, step_size, regula_para, stop_thresh, positive_flag,
+    def __init__(self, data_path, rep_num, step_size, step_size_e, regula_para, stop_thresh, positive_flag,
                  cost_f, grad_f, raw_nodes, step_bound=None, step_size_ratio=1.0, stop_thresh_ratio=1.0, decay_mode=1, 
                  print_grad=False):
 
@@ -24,6 +24,7 @@ class SimOpt():
         self.__rep_num = rep_num
         self.__data_path = data_path
         self.__step_size = step_size
+        self.__step_size_e = step_size_e
         self.__regula_para = regula_para # regularization parameter
         self.__stop_thresh = stop_thresh #stopping threshold
         self.__positive_flag = positive_flag
@@ -69,6 +70,7 @@ class SimOpt():
         while True:
             k += 1
             step_k = self.__step_size * 51 / (k ** self.__decay_mode + 50) 
+            step_k_e = self.__step_size_e * 51 / (k ** self.__decay_mode + 50)
             cost_y, grad_mean_r, grad_mean_e = self.__grad_f(y_Sr, y_Se, self.__rep_num)
             if selected_location is not None:
                 grad_mean_r = np.multiply(grad_mean_r, selected_location)
@@ -79,7 +81,9 @@ class SimOpt():
                 print('grad_r min:', format(np.min(grad_mean_r), '.3e'))
                 print('grad_e min:', format(np.min(grad_mean_e), '.3e'))
             I_Sr = prox((y_Sr - step_k * grad_mean_r), step_k * regula_para2)
-            I_Se = y_Se - step_k * grad_mean_e 
+            I_Se = y_Se - step_k_e * grad_mean_e
+            print('I_Se:', I_Se) 
+            print('grad_e:', grad_mean_e)
             if self.__positive_flag: 
                 I_Sr = np.maximum(I_Sr, 0)
                 I_Se = np.maximum(I_Se, 0)

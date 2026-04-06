@@ -1,11 +1,3 @@
-"""
-This module contains the simulation optimization algorithm for the RNN inspired simulation approach for large-scale inventory optimization problems 
-discussed in the paper, "Large-Scale Inventory Optimization: A Recurrent-Neural-Networks-Inspired Simulation Approach".
-
-Author:
-    Tan Wang
-"""
-
 import os
 import numpy as np
 from time import time
@@ -25,8 +17,8 @@ class SimOpt():
         self.__data_path = data_path
         self.__step_size = step_size
         self.__step_size_e = step_size_e
-        self.__regula_para = regula_para # regularization parameter
-        self.__stop_thresh = stop_thresh #stopping threshold
+        self.__regula_para = regula_para 
+        self.__stop_thresh = stop_thresh
         self.__positive_flag = positive_flag
         self.__decay_mode = decay_mode
         self.__grad_f = grad_f
@@ -82,8 +74,6 @@ class SimOpt():
                 print('grad_e min:', format(np.min(grad_mean_e), '.3e'))
             I_Sr = prox((y_Sr - step_k * grad_mean_r), step_k * regula_para2)
             I_Se = y_Se - step_k_e * grad_mean_e
-            print('I_Se:', I_Se) 
-            print('grad_e:', grad_mean_e)
             if self.__positive_flag: 
                 I_Sr = np.maximum(I_Sr, 0)
                 I_Se = np.maximum(I_Se, 0)
@@ -96,7 +86,7 @@ class SimOpt():
             cost_x = self.__cost_f(I_Sr, I_Se, self.__rep_num)
             opt_history.append((cost_x, cost_x + np.sum(np.abs(I_Sr)) * self.__regula_para , np.count_nonzero(I_Sr)))
             _print_opt_info(cost_x, I_Sr, I_Se, k, self.__regula_para)
-            current_cost = cost_x  # + np.sum(np.abs(I_S)) * regul_factor
+            current_cost = cost_x
             if abs(current_cost - former_cost) < self.__stop_thresh * former_cost:
                 break
             else:

@@ -1,11 +1,3 @@
-"""
-This module contains the experiments for the RNN inspired simulation approach for large-scale inventory optimization problems
-discussed in the paper, "Large-Scale Inventory Optimization: A Recurrent-Neural-Networks-Inspired Simulation Approach".
-
-Author:
-    Tan Wang
-"""
-
 import os
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))

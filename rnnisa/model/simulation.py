@@ -295,7 +295,7 @@ def _simulate_and_bp_parallel(args):
 
         purchase_order_e = Oe_t * raw_material_node
         purchase_order_r = Or_t * raw_material_node
-        mau_o = Oe_t + Or_t - purchase_order_e - purchase_order_r + M_backlog
+        mau_o = (Oe_t + Or_t - purchase_order_e - purchase_order_r + M_backlog)*(1 - raw_material_node)
         idx_purch = nonzero((Oe_t+Or_t) * raw_material_node)[1] 
         idx_mau = nonzero(mau_o * (one -raw_material_node))[1]
 
@@ -341,7 +341,7 @@ def _simulate_and_bp_parallel(args):
     for t in range(duration - 1, -1, -1):
         d_Mact = - d_It * B_T
         d_Mq = d_Mact - d_Mt_backlog + d_P_buf[t]
-        d_mau_o = d_Mt_backlog + np_multiply(d_Mq, d_M_d_man_o[t])
+        d_mau_o = (d_Mt_backlog + np_multiply(d_Mq, d_M_d_man_o[t]))*(1 - raw_material_node)
         d_res_r = zeros_like(I_Sr)
         for idx in d_M_d_r_r[t]:
             val, cols = d_M_d_r_r[t][idx]
@@ -349,7 +349,7 @@ def _simulate_and_bp_parallel(args):
             
         d_It = d_It + d_res_r * d_r_r_d_I[t]
         d_res_n = d_res_r * d_r_r_d_r_n[t]
-        d_mau_o = d_mau_o + d_res_n * B_T
+        d_mau_o = (d_mau_o + d_res_n * B_T)*(1 - raw_material_node)
         d_Or[t] += d_mau_o * mau_item_diag + c_slow * raw_material_node
         d_Oe[t] += c_fast * raw_material_node
         d_Yt = d_It * d_It_d_Yt[t] + d_Dback * d_Dback_d_Yt[t]
@@ -569,10 +569,10 @@ def _simulate_and_bp_tf(args):
             D_backlog = -tf_minimum(zero, temp_I_val)
             purchase_order_e = Oe_t * raw_material_node
             purchase_order_r = Or_t * raw_material_node
-            mau_o = Oe_t + Or_t - purchase_order_e - purchase_order_r + M_backlog
+            mau_o = (Oe_t + Or_t - purchase_order_e - purchase_order_r + M_backlog)*(1 - raw_material_node)
             Or_history = update(Or_history, [[t]], purchase_order_r)
             with tape.stop_recording():
-                idx_mau = where(mau_o > 0).numpy()
+                current_active_idx = where(mau_o > 0).numpy()
                 idx_purch2 =  where(purchase_order_e > 0)[:, 1].numpy()
                 idx_purch3 =  where(purchase_order_r > 0)[:, 1].numpy()
                 Oe_vals[ts_fast[t, idx_purch2], t, idx_purch2] = one_small
@@ -581,7 +581,7 @@ def _simulate_and_bp_tf(args):
             res_needed = tf_maximum(equal_tolerance, res_needed)
             res_rate = I_t / res_needed
             res_rate = tf_minimum(one, res_rate)
-            min_rate = scatter_nd(idx_mau, [reduce_min(gather_nd(res_rate,tf_B_indices_list[index])) for index in idx_mau[:, 1]], vector_shape)
+            min_rate = scatter_nd(current_active_idx, [reduce_min(gather_nd(res_rate,tf_B_indices_list[index])) for index in current_active_idx[:, 1]], vector_shape)
             M_act = min_rate * mau_o
 
             P_history = update(P_history, [[t]], purchase_order_r+M_act)
@@ -589,7 +589,7 @@ def _simulate_and_bp_tf(args):
 
             with tape.stop_recording():
                 valid_t = np.minimum(t + delta_lt, duration)
-                Pr_vals[valid_t, t, idx_purch3] = one_small
+                Pr_vals[valid_t[idx_purch3], t, idx_purch3] = one_small
                 idx_mau2 = where(M_act > 0)[:, 1].numpy()
                 P_values[ts_slow[t, idx_mau2], t, idx_mau2] = one_small
             M_backlog = mau_o - M_act

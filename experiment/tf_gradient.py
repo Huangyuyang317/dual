@@ -50,9 +50,14 @@ def run_gradient_check():
         if grad_e_tf is not None: grad_e_tf = np.squeeze(grad_e_tf)
 
         print(f"Cost 对比: 手动={cost_custom:.4f}, TF={cost_tf:.4f} | 差异={cost_diff:.2e}")
-        print(f"Sr 梯度对比: 手动={grad_r_custom:.4f}, TF={grad_r_tf:.4f} | 差异={np.abs(grad_r_custom - grad_r_tf):.2e}")
-        print(f"Se 梯度对比: 手动={grad_e_custom:.4f}, TF={grad_e_tf:.4f} | 差异={np.abs(grad_e_custom - grad_e_tf):.2e}")
-        
+        print(f"Sr 手动梯度: \n{grad_r_custom}")
+        print(f"Sr TF梯度: \n{grad_r_tf}")
+        print(f"Sr 差异数组: \n{np.abs(grad_r_custom - grad_r_tf)}")
+        print(f"Se 手动梯度: \n{grad_e_custom}")
+        print(f"Se TF梯度: \n{grad_e_tf}")
+        print(f"Se 差异数组: \n{np.abs(grad_e_custom - grad_e_tf)}")
+
+
         err_r = np.abs(grad_r_custom - grad_r_tf)
         max_err_r = np.max(err_r)
         

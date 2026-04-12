@@ -29,7 +29,7 @@ def run_rnn_spanning_tree_optimization(data_type, temp_path, nodes_num):
     regula_para_dict={10:1.2e3}
     stop_thresh_dict={10:1e-3}
     stop_thresh_ratio_dict={10:1.0}
-    step_size_ratio_dict={10:0.3}
+    step_size_ratio_dict={10:0.1}
     step_bound_dict={10:None}
     I_S0_K_dict={10:20}
 

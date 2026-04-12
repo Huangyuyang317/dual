@@ -103,7 +103,7 @@ class SimOpt():
         return I_Sr, I_Se, k
 
 
-    def SGD(self, I_Sr_0, I_Se_0, selected_location=None):
+    def SGD(self, I_Sr_0, I_Se_0, selected_location=None, selected_location_e=None):
         stop_thresh = self.__stop_thresh * self.__stop_thresh_ratio
         step_size = self.__step_size * self.__step_size_ratio
         print('SGD:', 'step_size', format(step_size, '.3e'),
@@ -113,10 +113,13 @@ class SimOpt():
         t_s_SGD = time()
         if selected_location is None:
             I_Sr = I_Sr_0
-            I_Se = I_Se_0
+            I_Se = I_Se_0 if selected_location_e is None else np.multiply(I_Se_0, selected_location_e)
         else:
             I_Sr = np.multiply(I_Sr_0, selected_location)
-            I_Se = np.multiply(I_Se_0, selected_location)
+            if selected_location_e is None:
+                I_Se = np.multiply(I_Se_0, selected_location)
+            else:
+                I_Se = np.multiply(I_Se_0, selected_location_e)
         epoch_num = 0
         former_cost = 0
         opt_history = []
@@ -125,7 +128,11 @@ class SimOpt():
             avg_cost, grad_mean_r, grad_mean_e = self.__grad_f(I_Sr, I_Se, self.__rep_num)
             if selected_location is not None:
                 grad_mean_r = np.multiply(grad_mean_r, selected_location)
-                grad_mean_e = np.multiply(grad_mean_e, selected_location)
+            if selected_location_e is None:
+                if selected_location is not None:
+                    grad_mean_e = np.multiply(grad_mean_e, selected_location)
+            else:
+                grad_mean_e = np.multiply(grad_mean_e, selected_location_e)
             if self.__print_grad:
                 print('grad_r max:', format(np.max(grad_mean_r), '.3e'))
                 print('grad_e max:', format(np.max(grad_mean_e), '.3e'))
@@ -201,8 +208,10 @@ class SimOpt():
         print('Initial regular Point: ', I_Sr_0)
         print('Initial emergency Point: ', I_Se_0)
         I_Sr_1, I_Se_1, _ = self.FISTA(I_Sr_0=I_Sr_0, I_Se_0=I_Se_0*self.__raw_nodes, selected_location=selected_location)
-        selected_location = np.where(np.abs(I_Sr_1) <= 0, 0, 1)  # np.where(I_S >= 1, 1, 0)
-        I_Sr_2,I_Se_2 = self.SGD(I_Sr_0=I_Sr_1,I_Se_0=I_Se_1*self.__raw_nodes, selected_location=selected_location)
+        selected_location_r = np.where(np.abs(I_Sr_1) <= 0, 0, 1)  # np.where(I_S >= 1, 1, 0)
+        selected_location_e = self.__raw_nodes
+        I_Sr_2,I_Se_2 = self.SGD(I_Sr_0=I_Sr_1, I_Se_0=I_Se_1*self.__raw_nodes,
+                                 selected_location=selected_location_r, selected_location_e=selected_location_e)
         print_run_time('Two Stage Procedure', t_s)
         return I_Sr_1, I_Se_1, I_Sr_2, I_Se_2
 
@@ -231,7 +240,6 @@ def cal_step_bound(x_former, x, bound_info):
     upper = np.maximum(bound_info[0], bound_info[1] * x_former)
     lower = np.minimum(bound_info[2], bound_info[3] * x_former)
     return x_former + np.maximum(lower, np.minimum(x - x_former, upper))
-
 
 
 

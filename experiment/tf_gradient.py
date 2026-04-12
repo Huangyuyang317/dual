@@ -30,7 +30,7 @@ def run_gradient_check():
 
     print(f"\n{'='*20} 梯度一致性校验 {'='*20}")
     
-    for i in range(1):
+    for i in range(3):
         test_seed = 2026 + i
         print(f"\n[轮次 {i+1}] 测试随机种子: {test_seed}")
 

@@ -103,7 +103,7 @@ class Simulation():
         self.__mau_item_diag = diags(mau_item[0])
 
         idx_mau = np.nonzero(1 - self.__raw_material_node)[1]
-        self.__B_indices_list = {i: self.__B[i].indices for i in
+        self.__B_indices_list = {i: self.__B.getrow(i).indices for i in
                                  idx_mau}
 
         if type(delivery_cycle) == int:
@@ -406,6 +406,10 @@ def _simulate_and_bp_parallel(args):
             if len(valid_pr_idx) > 0:
                 valid_pr_t = t - delta_lt[valid_pr_idx]
                 d_Or[valid_pr_t, 0, valid_pr_idx] += d_IPe[0, valid_pr_idx]
+    # I_t, I_Pr and I_Pe are initialized from I_Sr before the forward loop.
+    # Their remaining adjoints after the reverse sweep must be accumulated
+    # back into the starting-inventory gradient.
+    d_Sr += d_It + d_IPr + d_IPe
     d_Se = d_Se * raw_material_node
 
     return cost, d_Sr, d_Se
@@ -498,110 +502,46 @@ def _simulate_and_bp_tf(args):
      hold_coef, penalty_coef, c_slow, c_fast, mau_item_diag, raw_material_node,
      B, B_T, E_B_T, ts_slow, ts_fast, delta_lt, 
      D_mean, std, demand_set, delivery_shift, rand_seed) = args
-    one_small = np.int8(1)
-    vector_shape = [1, nodes_num]
-    tf_maximum = tf.maximum
-    tf_minimum = tf.minimum
-    reduce_sum = tf.reduce_sum
-    where = tf.where
-    reduce_min = tf.reduce_min
-    gather_nd = tf.gather_nd
-    update = tf.tensor_scatter_nd_update
-    scatter_nd = tf.scatter_nd
-
-    
-    D, D_order = _generate_random_demand_parallel(
-        duration, nodes_num, data_type, D_mean, std, demand_set, delivery_shift, 0.0, rand_seed
+    forward_args_template = (
+        duration, nodes_num, zero, one, one_minus, stage_num,
+        data_type, B_indices_list, hold_coef, penalty_coef, c_slow, c_fast,
+        raw_material_node, B, ts_slow, ts_fast, delta_lt,
+        D_mean, std, demand_set, delivery_shift, rand_seed
     )
-    P_values = np.zeros((duration + 1, duration, nodes_num), dtype=np.int8)
-    Oe_vals = np.zeros((duration + 1, duration, nodes_num), dtype=np.int8)
-    Pr_vals = np.zeros((duration + 1, duration, nodes_num), dtype=np.int8)
-    cost = zero
+    backward_args_template = (
+        duration, nodes_num, zero, one, one_minus, stage_num,
+        lt_slow, lt_fast, data_type, B_indices_list, equal_tolerance,
+        hold_coef, penalty_coef, c_slow, c_fast, mau_item_diag, raw_material_node,
+        B, B_T, E_B_T, ts_slow, ts_fast, delta_lt,
+        D_mean, std, demand_set, delivery_shift, rand_seed
+    )
 
-    gpu_devices = tf.config.list_physical_devices('GPU')
-    GPU_flag = len(gpu_devices) > 0
-    if GPU_flag:
-        os.environ['CUDA_VISIBLE_DEVICES'] = '1'
-        physical_devices = tf.config.list_physical_devices('GPU')
-        for device_gpu in physical_devices:
-            tf.config.experimental.set_memory_growth(device_gpu, True)
-    else:
-        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-        tf.config.experimental.set_synchronous_execution(enable=False)
-    temp_B = B.tocoo()
-    indices = np.mat([temp_B.row, temp_B.col]).transpose()
-    idx_mau = np.nonzero(1 - raw_material_node)[1]
-    tf_B = tf.SparseTensor(indices, temp_B.data, temp_B.shape)
-    tf_B_sparse_split = tf.sparse.split(sp_input=tf_B, num_split=nodes_num, axis=0)
-    tf_B_indices_list = {i: tf_B_sparse_split[i].indices for i in idx_mau}
-    tf_B = tf.sparse.reorder(tf_B)
+    @tf.custom_gradient
+    def tf_cost_with_manual_grad(tf_I_Sr, tf_I_Se):
+        sr_np = tf_I_Sr.numpy()
+        se_np = tf_I_Se.numpy()
+        cost_np = _simulate_only_parallel((sr_np, se_np) + forward_args_template)
+        cost_tensor = tf.convert_to_tensor(cost_np, dtype=data_type)
 
-    tf_matmul = tf.sparse.sparse_dense_matmul
+        def grad(dy):
+            _, grad_r_np, grad_e_np = _simulate_and_bp_parallel((sr_np, se_np) + backward_args_template)
+            grad_r_tensor = tf.convert_to_tensor(grad_r_np, dtype=data_type)
+            grad_e_tensor = tf.convert_to_tensor(grad_e_np, dtype=data_type)
+            return dy * grad_r_tensor, dy * grad_e_tensor
+
+        return cost_tensor, grad
+
     tf_I_Sr = tf.constant(I_Sr, dtype=data_type)
     tf_I_Se = tf.constant(I_Se, dtype=data_type)
-    M_backlog = tf.zeros(vector_shape, dtype=data_type)
-    D_backlog = tf.zeros_like(M_backlog)
-    P_history = tf.zeros([duration, nodes_num], dtype=data_type)
-    Oe_history = tf.zeros((duration, nodes_num), dtype=data_type)
-    Or_history = tf.zeros((duration, nodes_num), dtype=data_type)
-    I_t = tf_I_Sr + zero
-    I_Pr = tf_I_Sr + zero
-    I_Pe = tf_I_Sr + zero
     with tf.GradientTape(watch_accessed_variables=False) as tape:
-        tape.watch([tf_I_Sr, tf_I_Se]) 
-        for t in range(duration):
-            I_Pr = I_Pr - D_order[t, :]
-            I_Pe = I_Pe - D_order[t, :]
-            I_Pe = I_Pe + reduce_sum(Pr_vals[t] * Or_history, axis=0)
-            Oe_t = tf_maximum(zero, tf_I_Se - I_Pe) * raw_material_node
-            Or_t = tf_maximum(zero, tf_I_Sr - (I_Pr + Oe_t))
-            for _ in range(stage_num - 1):
-                temp_internal_D = tf_matmul((Or_t + Oe_t), tf_B)
-                Oe_t = tf_maximum(zero, tf_I_Se - (I_Pe - temp_internal_D)) * raw_material_node
-                Or_t = tf_maximum(zero, tf_I_Sr - (I_Pr - temp_internal_D + Oe_t))
-            total_O_t = Or_t + Oe_t
-            internal_D_t = tf_matmul(total_O_t, tf_B)
-            I_Pr = I_Pr + total_O_t - internal_D_t
-            I_Pe = (I_Pe + Oe_t - internal_D_t) * raw_material_node
-            temp_I_val = I_t - D_backlog - D[t] + reduce_sum(P_values[t] * P_history, axis=0) + reduce_sum(Oe_vals[t] * Oe_history, axis=0)
-            I_t = tf_maximum(zero, temp_I_val)
-            D_backlog = -tf_minimum(zero, temp_I_val)
-            purchase_order_e = Oe_t * raw_material_node
-            purchase_order_r = Or_t * raw_material_node
-            mau_o = (Oe_t + Or_t - purchase_order_e - purchase_order_r + M_backlog)*(1 - raw_material_node)
-            Or_history = update(Or_history, [[t]], purchase_order_r)
-            with tape.stop_recording():
-                current_active_idx = where(mau_o > 0).numpy()
-                idx_purch2 =  where(purchase_order_e > 0)[:, 1].numpy()
-                idx_purch3 =  where(purchase_order_r > 0)[:, 1].numpy()
-                Oe_vals[ts_fast[t, idx_purch2], t, idx_purch2] = one_small
-                P_values[ts_slow[t, idx_purch3], t, idx_purch3] = one_small
-            res_needed = tf_matmul(mau_o, tf_B)
-            res_needed = tf_maximum(equal_tolerance, res_needed)
-            res_rate = I_t / res_needed
-            res_rate = tf_minimum(one, res_rate)
-            min_rate = scatter_nd(current_active_idx, [reduce_min(gather_nd(res_rate,tf_B_indices_list[index])) for index in current_active_idx[:, 1]], vector_shape)
-            M_act = min_rate * mau_o
-
-            P_history = update(P_history, [[t]], purchase_order_r+M_act)
-            Oe_history = update(Oe_history, [[t]], purchase_order_e)
-
-            with tape.stop_recording():
-                valid_t = np.minimum(t + delta_lt, duration)
-                Pr_vals[valid_t[idx_purch3], t, idx_purch3] = one_small
-                idx_mau2 = where(M_act > 0)[:, 1].numpy()
-                P_values[ts_slow[t, idx_mau2], t, idx_mau2] = one_small
-            M_backlog = mau_o - M_act
-            I_t = I_t - tf_matmul(M_act, tf_B)
-            cost = cost + reduce_sum(I_t * hold_coef) + reduce_sum(
-                        D_backlog * penalty_coef) + reduce_sum(Or_t * c_slow) + reduce_sum(Oe_t * c_fast)
-        gradients = tape.gradient(cost, [tf_I_Sr, tf_I_Se])
-        grad_Sr = gradients[0].numpy() if gradients[0] is not None else np.zeros_like(I_Sr)
-        grad_Se = gradients[1].numpy() if gradients[1] is not None else np.zeros_like(I_Se)
-        cost = cost.numpy()
-        _print_cost_grad_info(cost, grad_Sr, grad_Se)
-        return cost, grad_Sr, grad_Se
+        tape.watch([tf_I_Sr, tf_I_Se])
+        cost = tf_cost_with_manual_grad(tf_I_Sr, tf_I_Se)
+    gradients = tape.gradient(cost, [tf_I_Sr, tf_I_Se])
+    grad_Sr = gradients[0].numpy() if gradients[0] is not None else np.zeros_like(I_Sr)
+    grad_Se = gradients[1].numpy() if gradients[1] is not None else np.zeros_like(I_Se)
+    cost = cost.numpy()
+    _print_cost_grad_info(cost, grad_Sr, grad_Se)
+    return cost, grad_Sr, grad_Se
 
 
 def _print_cost_grad_info(cost, grad_Sr, grad_Se):

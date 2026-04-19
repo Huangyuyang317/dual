@@ -8,7 +8,7 @@ from rnnisa.utils.tool_function import print_run_time, my_dump
 class SimOpt():
     def __init__(self, data_path, rep_num, step_size, step_size_e, regula_para, stop_thresh, positive_flag,
                  cost_f, grad_f, raw_nodes, step_bound=None, step_size_ratio=1.0, stop_thresh_ratio=1.0, decay_mode=1, 
-                 print_grad=False):
+                 print_grad=False, raw_sr_regula_scale=1.0, preserve_raw_stage2=False):
 
         print('Optimization parameters:', 'rep_num', rep_num, 'regula_para',
               format(regula_para, '.3e'), 'positive_flag', positive_flag, '\nstep_bound', step_bound,
@@ -24,6 +24,8 @@ class SimOpt():
         self.__grad_f = grad_f
         self.__cost_f = cost_f
         self.__raw_nodes = raw_nodes
+        self.__raw_sr_regula_scale = raw_sr_regula_scale
+        self.__preserve_raw_stage2 = preserve_raw_stage2
         if step_bound is None:
             self.__step_bound1 = None
             self.__step_bound2 = None
@@ -72,7 +74,7 @@ class SimOpt():
                 print('grad_e max:', format(np.max(grad_mean_e), '.3e'))
                 print('grad_r min:', format(np.min(grad_mean_r), '.3e'))
                 print('grad_e min:', format(np.min(grad_mean_e), '.3e'))
-            I_Sr = prox((y_Sr - step_k * grad_mean_r), step_k * regula_para2)
+            I_Sr = prox((y_Sr - step_k * grad_mean_r), step_k * regula_para2 * (1-self.__raw_nodes) + 0.05 * step_k * regula_para2 * self.__raw_nodes)
             I_Se = y_Se - step_k_e * grad_mean_e
             if self.__positive_flag: 
                 I_Sr = np.maximum(I_Sr, 0)
@@ -209,6 +211,8 @@ class SimOpt():
         print('Initial emergency Point: ', I_Se_0)
         I_Sr_1, I_Se_1, _ = self.FISTA(I_Sr_0=I_Sr_0, I_Se_0=I_Se_0*self.__raw_nodes, selected_location=selected_location)
         selected_location_r = np.where(np.abs(I_Sr_1) <= 0, 0, 1)  # np.where(I_S >= 1, 1, 0)
+        if self.__preserve_raw_stage2:
+            selected_location_r = np.maximum(selected_location_r, self.__raw_nodes)
         selected_location_e = self.__raw_nodes
         I_Sr_2,I_Se_2 = self.SGD(I_Sr_0=I_Sr_1, I_Se_0=I_Se_1*self.__raw_nodes,
                                  selected_location=selected_location_r, selected_location_e=selected_location_e)
@@ -240,8 +244,6 @@ def cal_step_bound(x_former, x, bound_info):
     upper = np.maximum(bound_info[0], bound_info[1] * x_former)
     lower = np.minimum(bound_info[2], bound_info[3] * x_former)
     return x_former + np.maximum(lower, np.minimum(x - x_former, upper))
-
-
 
 
 

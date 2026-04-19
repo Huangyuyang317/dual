@@ -76,6 +76,9 @@ class Simulation():
         self.__demand_set = demand_node
 
         self.__penalty_coef = data_type(penalty_factor) * self.__hold_coef
+        demand_mask = np.zeros((1, self.__nodes_num), dtype=data_type)
+        demand_mask[0, self.__demand_set] = 1.0
+        self.__penalty_coef = self.__penalty_coef * demand_mask
         self.__B = self.__B.astype(data_type)
         self.__B_T = self.__B.T
         self.__B_T = self.__B_T.tocsr()
